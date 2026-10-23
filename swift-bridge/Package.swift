@@ -9,6 +9,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "AppKitCallbackABI", path: "Sources/AppKitCallbackABI", publicHeadersPath: "include"),
-        .target(name: "AppKitBridge", dependencies: ["AppKitCallbackABI"], path: "Sources/AppKitBridge", publicHeadersPath: "include"),
+        .target(name: "AppKitExceptionShim", path: "Sources/AppKitExceptionShim", publicHeadersPath: "include"),
+        .target(name: "AppKitBridge", dependencies: ["AppKitCallbackABI", "AppKitExceptionShim"], path: "Sources/AppKitBridge", publicHeadersPath: "include"),
     ]
 )
