@@ -1,5 +1,6 @@
 import AppKit
 import AppKitCallbackABI
+import AppKitExceptionShim
 
 fileprivate enum AppKitHostMenuAction: Int32 {
     case other = -1
@@ -13,9 +14,15 @@ fileprivate enum AppKitHostMenuAction: Int32 {
 }
 
 final class AppKitApplicationDelegate: NSResponder, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
+    private static var pendingTerminationByToken: [UInt64: AppKitApplicationDelegate] = [:]
+
     let token: UInt64
     private let table: AppKitApplicationHostCallbacksV1
     private var active = true
+    private var probingTermination = false
+    private var pendingProbeTermination = false
+    fileprivate var lastProbeTerminationReply: Bool?
+    fileprivate var probeTerminationReplyCount = 0
 
     init?(token: UInt64, table: AppKitApplicationHostCallbacksV1) {
         guard Thread.isMainThread,
@@ -38,20 +45,58 @@ final class AppKitApplicationDelegate: NSResponder, NSApplicationDelegate, NSMen
         disconnect()
     }
 
-    func disconnect() {
-        guard active else { return }
+    @discardableResult
+    func disconnect() -> Bool {
+        guard active else { return true }
         active = false
-        NotificationCenter.default.removeObserver(
-            self,
-            name: NSApplication.didChangeScreenParametersNotification,
-            object: nil
-        )
+        let removed = appkit_try {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSApplication.didChangeScreenParametersNotification,
+                object: nil
+            )
+        } == nil
         table.deactivate(token)
+        return removed
     }
 
     private func deliver<Result>(_ fallback: Result, _ callback: () -> Result) -> Result {
         guard active, Thread.isMainThread else { return fallback }
         return withExtendedLifetime(self, callback)
+    }
+
+    fileprivate static func replyToTermination(_ token: UInt64, allowed: Bool) {
+        guard Thread.isMainThread,
+              let delegate = pendingTerminationByToken.removeValue(forKey: token) else {
+            return
+        }
+        if delegate.pendingProbeTermination {
+            delegate.pendingProbeTermination = false
+            delegate.lastProbeTerminationReply = allowed
+            delegate.probeTerminationReplyCount += 1
+            if allowed {
+                delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+            }
+        } else {
+            DispatchQueue.main.async {
+                withExtendedLifetime(delegate) {
+                    let replied = appkit_try {
+                        NSApplication.shared.reply(toApplicationShouldTerminate: allowed)
+                    } == nil
+                    guard replied else { return }
+                }
+            }
+        }
+    }
+
+    fileprivate func probeShouldTerminate(_ application: NSApplication, includeWillTerminate: Bool) -> NSApplication.TerminateReply {
+        probingTermination = true
+        defer { probingTermination = false }
+        let reply = applicationShouldTerminate(application)
+        if includeWillTerminate && reply == .terminateNow {
+            applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        }
+        return reply
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -67,16 +112,27 @@ final class AppKitApplicationDelegate: NSResponder, NSApplicationDelegate, NSMen
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        deliver(false) {
-            table.should_handle_reopen?(token, hasVisibleWindows) ?? false
+        deliver(true) {
+            table.should_handle_reopen?(token, hasVisibleWindows) ?? true
         }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let shouldTerminate = deliver(true) {
-            table.should_terminate?(token) ?? true
+        let reply = deliver(Int32(1)) {
+            table.should_terminate?(token) ?? 1
         }
-        return shouldTerminate ? .terminateNow : .terminateCancel
+        switch reply {
+        case 0:
+            return .terminateCancel
+        case 2:
+            Self.pendingTerminationByToken[token] = self
+            if probingTermination {
+                pendingProbeTermination = true
+            }
+            return .terminateLater
+        default:
+            return .terminateNow
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -88,10 +144,15 @@ final class AppKitApplicationDelegate: NSResponder, NSApplicationDelegate, NSMen
     func application(_ application: NSApplication, open urls: [URL]) {
         deliver(()) {
             guard let callback = table.open_urls else { return }
+            var urlBytes: [[UInt8]] = []
+            guard appkit_try({
+                urlBytes = urls.map { Array($0.absoluteString.utf8) }
+            }) == nil else {
+                return
+            }
             var bytes: [UInt8] = []
             var ranges: [AppKitApplicationHostUtf8Range] = []
-            for url in urls {
-                let value = Array(url.absoluteString.utf8)
+            for value in urlBytes {
                 ranges.append(AppKitApplicationHostUtf8Range(offset: bytes.count, length: value.count))
                 bytes.append(contentsOf: value)
             }
@@ -146,15 +207,26 @@ final class AppKitApplicationDelegate: NSResponder, NSApplicationDelegate, NSMen
     }
 
     private func sendMenuItemAction(_ action: AppKitHostMenuAction, sender: Any?) {
-        guard let item = sender as? NSMenuItem else { return }
+        guard Thread.isMainThread, let item = sender as? NSMenuItem else { return }
+        var tag = 0
+        guard appkit_try({ tag = item.tag }) == nil else { return }
         deliver(()) {
-            _ = table.menu_item_action?(token, Int64(item.tag), action.rawValue)
+            _ = table.menu_item_action?(token, Int64(tag), action.rawValue)
         }
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        deliver(false) {
-            table.validate_menu_item?(token, Int64(menuItem.tag), menuAction(for: menuItem.action).rawValue) ?? false
+        guard Thread.isMainThread else { return false }
+        var tag = 0
+        var selector: Selector?
+        guard appkit_try({
+            tag = menuItem.tag
+            selector = menuItem.action
+        }) == nil else {
+            return false
+        }
+        return deliver(false) {
+            table.validate_menu_item?(token, Int64(tag), menuAction(for: selector).rawValue) ?? false
         }
     }
 
@@ -220,28 +292,41 @@ public func appkit_application_host_install_v1(
         return nil
     }
     let application = NSApplication.shared
-    if let previous = application.delegate as? AppKitApplicationDelegate {
-        previous.disconnect()
+    let previous = application.delegate
+    guard appkit_try({ application.delegate = delegate }) == nil else {
+        _ = appkit_try { application.delegate = previous }
+        return nil
     }
-    application.delegate = delegate
-    NotificationCenter.default.addObserver(
-        delegate,
-        selector: #selector(AppKitApplicationDelegate.screenParametersChanged(_:)),
-        name: NSApplication.didChangeScreenParametersNotification,
-        object: nil
-    )
+    guard appkit_try({
+        NotificationCenter.default.addObserver(
+            delegate,
+            selector: #selector(AppKitApplicationDelegate.screenParametersChanged(_:)),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+    }) == nil else {
+        _ = appkit_try { application.delegate = previous }
+        return nil
+    }
+    (previous as? AppKitApplicationDelegate)?.disconnect()
     return Unmanaged.passRetained(delegate).toOpaque()
 }
 
 @_cdecl("appkit_application_host_uninstall")
-public func appkit_application_host_uninstall(_ handle: UnsafeMutableRawPointer) {
-    guard Thread.isMainThread else { return }
+public func appkit_application_host_uninstall(_ handle: UnsafeMutableRawPointer) -> Bool {
+    guard Thread.isMainThread else { return false }
     let delegate: AppKitApplicationDelegate = appkitObject(handle)
-    delegate.disconnect()
+    let removed = delegate.disconnect()
     let application = NSApplication.shared
     if application.delegate === delegate {
-        application.delegate = nil
+        return appkit_try({ application.delegate = nil }) == nil && removed
     }
+    return removed
+}
+
+@_cdecl("appkit_application_host_reply_to_termination")
+public func appkit_application_host_reply_to_termination(_ token: UInt64, _ allowed: Bool) {
+    AppKitApplicationDelegate.replyToTermination(token, allowed: allowed)
 }
 
 @_cdecl("appkit_application_host_probe")
@@ -291,7 +376,7 @@ public func appkit_application_host_probe(
     case 11:
         return application.delegate === delegate ? 1 : 0
     case 12:
-        return delegate.applicationShouldTerminate(application) == .terminateNow ? 1 : 0
+        return Int64(delegate.probeShouldTerminate(application, includeWillTerminate: false).rawValue)
     case 13:
         delegate.screenParametersChanged(Notification(name: NSApplication.didChangeScreenParametersNotification))
     case 14:
@@ -320,6 +405,12 @@ public func appkit_application_host_probe(
             }
         }
         return 1
+    case 15:
+        return delegate.lastProbeTerminationReply.map { $0 ? 1 : 0 } ?? -2
+    case 16:
+        return Int64(delegate.probeTerminationReplyCount)
+    case 17:
+        return Int64(delegate.probeShouldTerminate(application, includeWillTerminate: true).rawValue)
     default:
         return -1
     }

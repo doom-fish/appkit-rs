@@ -5,7 +5,7 @@ use std::rc::Rc;
 use appkit::application_host::{
     ApplicationHost, ApplicationHostHandlers, MenuAction, RetainedMenu, MENU_ITEM_ACTION_SELECTOR,
 };
-use appkit::{ffi, MainThreadMarker};
+use appkit::{ffi, Application, MainThreadMarker};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Calls {
@@ -54,8 +54,8 @@ fn configured_handlers(
         .replace(Some(Box::new(move || {
             seen.borrow_mut().lifecycle.push("will finish");
             assert_eq!(probe(nested.get(), 3, 0, 0, false), 0);
-            assert_eq!(probe(nested.get(), 2, 0, 0, false), 0);
-            assert_eq!(probe(nested.get(), 12, 0, 0, false), 0);
+            assert_eq!(probe(nested.get(), 2, 0, 0, false), 1);
+            assert_eq!(probe(nested.get(), 12, 0, 0, false), 2);
         })));
 
     let seen = Rc::clone(calls);
@@ -82,7 +82,7 @@ fn configured_handlers(
             calls.should_terminate
         };
         if attempts == 1 {
-            assert_eq!(probe(nested.get(), 12, 0, 0, false), 0);
+            assert_eq!(probe(nested.get(), 12, 0, 0, false), 2);
         }
         attempts == 2
     })));
@@ -148,7 +148,7 @@ fn installed_default_host(main_thread: MainThreadMarker) -> ApplicationHost {
     for method in [0, 1, 3, 4, 6, 8, 9, 13] {
         assert_eq!(probe(default_delegate, method, 0, 0, false), 0);
     }
-    assert_eq!(probe(default_delegate, 2, 0, 0, false), 0);
+    assert_eq!(probe(default_delegate, 2, 0, 0, false), 1);
     assert_eq!(probe(default_delegate, 5, 0, 0, false), 0);
     assert_eq!(probe(default_delegate, 7, 0, 0, false), 0);
     assert_eq!(probe(default_delegate, 12, 0, 0, false), 1);
@@ -180,8 +180,185 @@ fn close_during_callback(main_thread: MainThreadMarker) {
     unsafe { ffi::appkit_release(delegate) };
 }
 
+fn termination_from_menu_action(main_thread: MainThreadMarker, has_handler: bool) {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let delegate_ptr = Rc::new(Cell::new(core::ptr::null_mut()));
+    let handlers = ApplicationHostHandlers::default();
+
+    let seen = Rc::clone(&events);
+    let _ = handlers.will_terminate.replace(Some(Box::new(move || {
+        seen.borrow_mut().push("will terminate");
+    })));
+
+    if has_handler {
+        let seen = Rc::clone(&events);
+        let _ = handlers.should_terminate.replace(Some(Box::new(move || {
+            seen.borrow_mut().push("should terminate");
+            true
+        })));
+    }
+
+    let seen = Rc::clone(&events);
+    let nested = Rc::clone(&delegate_ptr);
+    let _ = handlers
+        .menu_item_action
+        .replace(Some(Box::new(move |_, _| {
+            seen.borrow_mut().push("menu start");
+            assert_eq!(
+                probe(nested.get(), 17, 0, 0, false),
+                if has_handler { 2 } else { 1 }
+            );
+            seen.borrow_mut().push("menu end");
+        })));
+
+    let host = ApplicationHost::install(main_thread, handlers).expect("a menu delegate");
+    let delegate = host.delegate_borrowed_ptr();
+    delegate_ptr.set(delegate);
+    assert_eq!(probe(delegate, 6, 0, 10, false), 0);
+    if has_handler {
+        assert_eq!(
+            *events.borrow(),
+            [
+                "menu start",
+                "menu end",
+                "should terminate",
+                "will terminate"
+            ]
+        );
+        assert_eq!(probe(delegate, 15, 0, 0, false), 1);
+        assert_eq!(probe(delegate, 16, 0, 0, false), 1);
+    } else {
+        assert_eq!(
+            *events.borrow(),
+            ["menu start", "will terminate", "menu end"]
+        );
+        assert_eq!(probe(delegate, 15, 0, 0, false), -2);
+        assert_eq!(probe(delegate, 16, 0, 0, false), 0);
+    }
+}
+
+fn termination_handler_can_close_host(main_thread: MainThreadMarker) {
+    let holder = Rc::new(RefCell::new(None));
+    let weak = Rc::downgrade(&holder);
+    let handlers = ApplicationHostHandlers::default();
+    let _ = handlers.should_terminate.replace(Some(Box::new(move || {
+        if let Some(holder) = weak.upgrade() {
+            let host = holder.borrow_mut().take();
+            drop(host);
+        }
+        true
+    })));
+
+    let host = ApplicationHost::install(main_thread, handlers).expect("a disposable host");
+    let delegate = host.delegate_borrowed_ptr();
+    unsafe { ffi::appkit_retain(delegate) };
+    holder.replace(Some(host));
+    assert_eq!(probe(delegate, 12, 0, 0, false), 1);
+    assert!(holder.borrow().is_none());
+    assert_eq!(probe(delegate, 11, 0, 0, false), 0);
+    assert_eq!(probe(delegate, 12, 0, 0, false), 1);
+    unsafe { ffi::appkit_release(delegate) };
+}
+
+fn pending_termination_survives_host_drop(main_thread: MainThreadMarker) {
+    let holder = Rc::new(RefCell::new(None));
+    let weak = Rc::downgrade(&holder);
+    let delegate_ptr = Rc::new(Cell::new(core::ptr::null_mut()));
+    let nested = Rc::clone(&delegate_ptr);
+    let handlers = ApplicationHostHandlers::default();
+    let _ = handlers.should_terminate.replace(Some(Box::new(|| {
+        panic!("a deactivated host cannot invoke its handler")
+    })));
+    let _ = handlers
+        .menu_item_action
+        .replace(Some(Box::new(move |_, _| {
+            assert_eq!(probe(nested.get(), 17, 0, 0, false), 2);
+            let holder = weak.upgrade().expect("the active host");
+            let host = holder.borrow_mut().take();
+            drop(host);
+        })));
+    let host = ApplicationHost::install(main_thread, handlers).expect("a disposable host");
+    let delegate = host.delegate_borrowed_ptr();
+    delegate_ptr.set(delegate);
+    unsafe { ffi::appkit_retain(delegate) };
+    holder.replace(Some(host));
+    assert_eq!(probe(delegate, 6, 0, 10, false), 0);
+    assert!(holder.borrow().is_none());
+    assert_eq!(probe(delegate, 15, 0, 0, false), 1);
+    assert_eq!(probe(delegate, 16, 0, 0, false), 1);
+    unsafe { ffi::appkit_release(delegate) };
+}
+
+fn actual_termination_child(main_thread: MainThreadMarker) {
+    use std::io::Write as _;
+
+    let handlers = ApplicationHostHandlers::default();
+    let _ = handlers.will_terminate.replace(Some(Box::new(|| {
+        println!("will terminate");
+        std::io::stdout().flush().expect("a flushed callback");
+    })));
+    let _ = handlers
+        .menu_item_action
+        .replace(Some(Box::new(move |_, _| {
+            println!("menu action");
+            std::io::stdout().flush().expect("a flushed action");
+            Application::shared(main_thread).terminate();
+            println!("menu action returned");
+        })));
+    let host = ApplicationHost::install(main_thread, handlers).expect("an application delegate");
+    assert_eq!(probe(host.delegate_borrowed_ptr(), 6, 0, 10, false), 0);
+    println!("child completed");
+}
+
+fn actual_termination_ends_the_process() {
+    use std::time::{Duration, Instant};
+
+    let mut child = std::process::Command::new(std::env::current_exe().expect("the example path"))
+        .arg("--terminate-now")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("a child process");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if child.try_wait().expect("the child status").is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the child did not terminate");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let child = child.wait_with_output().expect("the child output");
+    assert!(child.status.success(), "the child process did not exit");
+    let output = String::from_utf8(child.stdout).expect("the child output");
+    assert_eq!(
+        output.lines().collect::<Vec<_>>(),
+        ["menu action", "will terminate"]
+    );
+}
+
+fn verify_launch_and_reentry(delegate: *mut c_void, calls: &Rc<RefCell<Calls>>) {
+    assert_eq!(probe(delegate, 0, 0, 0, false), 0);
+    assert_eq!(
+        calls.borrow().lifecycle,
+        vec!["will finish", "will terminate"]
+    );
+    assert_eq!(calls.borrow().reopen, []);
+    assert_eq!(calls.borrow().should_terminate, 1);
+    assert_eq!(probe(delegate, 15, 0, 0, false), 0);
+    assert_eq!(probe(delegate, 16, 0, 0, false), 1);
+    assert_eq!(probe(delegate, 1, 0, 0, false), 0);
+}
+
 fn main() {
     let main_thread = MainThreadMarker::new().expect("the main thread");
+    if let Some(mode) = std::env::args().nth(1) {
+        assert_eq!(mode, "--terminate-now");
+        actual_termination_child(main_thread);
+        return;
+    }
     let defaults = installed_default_host(main_thread);
     let default_delegate = defaults.delegate_borrowed_ptr();
     let calls = Rc::new(RefCell::new(Calls::default()));
@@ -196,17 +373,9 @@ fn main() {
     assert_eq!(MENU_ITEM_ACTION_SELECTOR, "handleAppKitMenuItem:");
     assert_eq!(probe(delegate, 10, 0, 0, false), 1);
 
-    assert_eq!(probe(delegate, 0, 0, 0, false), 0);
-    assert_eq!(
-        calls.borrow().lifecycle,
-        vec!["will finish", "will terminate"]
-    );
-    assert_eq!(calls.borrow().reopen, []);
-    assert_eq!(calls.borrow().should_terminate, 0);
-    assert_eq!(probe(delegate, 1, 0, 0, false), 0);
+    verify_launch_and_reentry(delegate, &calls);
     assert_eq!(probe(delegate, 2, 0, 0, false), 1);
     assert_eq!(probe(delegate, 2, 0, 0, true), 0);
-    assert_eq!(probe(delegate, 12, 0, 0, false), 0);
     assert_eq!(probe(delegate, 12, 0, 0, false), 1);
     assert_eq!(probe(delegate, 3, 0, 0, false), 0);
     assert_eq!(probe(delegate, 4, 0, 0, false), 0);
@@ -273,12 +442,17 @@ fn main() {
     for method in [0, 1, 3, 4, 6, 8, 9, 13] {
         assert_eq!(probe(delegate, method, 0, 10, false), 0);
     }
-    assert_eq!(probe(delegate, 2, 0, 0, false), 0);
+    assert_eq!(probe(delegate, 2, 0, 0, false), 1);
     assert_eq!(probe(delegate, 5, 0, 0, false), 0);
     assert_eq!(probe(delegate, 7, 0, 10, false), 0);
     assert_eq!(probe(delegate, 12, 0, 0, false), 1);
     unsafe { ffi::appkit_release(delegate) };
     assert_eq!(*calls.borrow(), snapshot);
     close_during_callback(main_thread);
+    termination_from_menu_action(main_thread, false);
+    termination_from_menu_action(main_thread, true);
+    termination_handler_can_close_host(main_thread);
+    pending_termination_survives_host_drop(main_thread);
+    actual_termination_ends_the_process();
     println!("The application delegate remains inactive after its host closes.");
 }

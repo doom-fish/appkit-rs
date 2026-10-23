@@ -71,12 +71,46 @@ impl RetainedMenu {
     }
 }
 
+pub struct TerminationHandlerSlot {
+    slot: HandlerSlot<Box<dyn FnMut() -> bool>>,
+    configured: Cell<bool>,
+}
+
+impl TerminationHandlerSlot {
+    pub fn replace(
+        &self,
+        handler: Option<Box<dyn FnMut() -> bool>>,
+    ) -> Option<Box<dyn FnMut() -> bool>> {
+        let configured = handler.is_some();
+        let previous = self.slot.replace(handler);
+        self.configured.set(configured);
+        previous
+    }
+}
+
+impl Default for TerminationHandlerSlot {
+    fn default() -> Self {
+        Self {
+            slot: HandlerSlot::new(),
+            configured: Cell::new(false),
+        }
+    }
+}
+
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminationDecision {
+    Cancel = 0,
+    Now = 1,
+    Later = 2,
+}
+
 #[derive(Default)]
 pub struct ApplicationHostHandlers {
     pub will_finish_launching: HandlerSlot<Box<dyn FnMut()>>,
     pub did_finish_launching: HandlerSlot<Box<dyn FnMut()>>,
     pub should_handle_reopen: HandlerSlot<Box<dyn FnMut(bool) -> bool>>,
-    pub should_terminate: HandlerSlot<Box<dyn FnMut() -> bool>>,
+    pub should_terminate: TerminationHandlerSlot,
     pub will_terminate: HandlerSlot<Box<dyn FnMut()>>,
     pub open_urls: HandlerSlot<Box<dyn FnMut(Vec<String>)>>,
     pub dock_menu_retained: HandlerSlot<Box<dyn FnMut() -> Option<RetainedMenu>>>,
@@ -89,7 +123,6 @@ pub struct ApplicationHostHandlers {
 enum DeferredNotification {
     WillFinishLaunching,
     DidFinishLaunching,
-    WillTerminate,
     OpenUrls(Vec<String>),
     MenuItemAction(MenuAction, i64),
     MenuWillOpen,
@@ -101,18 +134,40 @@ struct ApplicationHostState {
     alive: Cell<bool>,
     running: Cell<bool>,
     pending: RefCell<VecDeque<DeferredNotification>>,
+    pending_termination: Cell<bool>,
+    token: Cell<u64>,
 }
 
 struct CallbackTurn<'a>(&'a ApplicationHostState);
 
 impl Drop for CallbackTurn<'_> {
     fn drop(&mut self) {
+        let pending_termination = self.0.pending_termination.replace(false);
         self.0.pending.borrow_mut().clear();
         self.0.running.set(false);
+        if pending_termination && self.0.token.get() != 0 {
+            unsafe {
+                ffi::application_host::appkit_application_host_reply_to_termination(
+                    self.0.token.get(),
+                    true,
+                );
+            }
+        }
     }
 }
 
 impl ApplicationHostState {
+    const fn new(handlers: ApplicationHostHandlers) -> Self {
+        Self {
+            handlers,
+            alive: Cell::new(true),
+            running: Cell::new(false),
+            pending: RefCell::new(VecDeque::new()),
+            pending_termination: Cell::new(false),
+            token: Cell::new(0),
+        }
+    }
+
     fn enter(&self) -> Option<CallbackTurn<'_>> {
         if !self.alive.get() || self.running.replace(true) {
             return None;
@@ -132,20 +187,80 @@ impl ApplicationHostState {
             return;
         };
         self.invoke_notification(event);
-        self.drain_pending();
+        self.drain_pending(None);
     }
 
     fn query<R>(&self, handler: impl FnOnce(&ApplicationHostHandlers) -> R) -> Option<R> {
         let _turn = self.enter()?;
         let result = handler(&self.handlers);
-        self.drain_pending();
+        self.drain_pending(None);
         self.alive.get().then_some(result)
     }
 
-    fn drain_pending(&self) {
-        while self.alive.get() {
+    fn reopen(&self, has_visible_windows: bool) -> bool {
+        self.query(|handlers| {
+            handlers
+                .should_handle_reopen
+                .invoke("AppKit reopen handler", |handler| {
+                    handler(has_visible_windows)
+                })
+                .unwrap_or(true)
+        })
+        .unwrap_or(true)
+    }
+
+    fn termination_decision(&self) -> TerminationDecision {
+        if !self.alive.get() || !self.handlers.should_terminate.configured.get() {
+            return TerminationDecision::Now;
+        }
+        if self.running.get() {
+            self.pending_termination.set(true);
+            return TerminationDecision::Later;
+        }
+        let Some(_turn) = self.enter() else {
+            return TerminationDecision::Now;
+        };
+        let allowed = self.invoke_termination_handler();
+        self.drain_pending(Some(allowed));
+        if allowed {
+            TerminationDecision::Now
+        } else {
+            TerminationDecision::Cancel
+        }
+    }
+
+    fn invoke_termination_handler(&self) -> bool {
+        if !self.alive.get() || !self.handlers.should_terminate.configured.get() {
+            return true;
+        }
+        self.handlers
+            .should_terminate
+            .slot
+            .invoke("AppKit should terminate handler", |handler| handler())
+            .unwrap_or(true)
+    }
+
+    fn drain_pending(&self, mut termination_answer: Option<bool>) {
+        loop {
+            if self.pending_termination.replace(false) {
+                let allowed = termination_answer
+                    .take()
+                    .unwrap_or_else(|| self.invoke_termination_handler());
+                self.pending_termination.set(false);
+                if self.token.get() != 0 {
+                    unsafe {
+                        ffi::application_host::appkit_application_host_reply_to_termination(
+                            self.token.get(),
+                            allowed,
+                        );
+                    }
+                }
+            }
+            if !self.alive.get() {
+                return;
+            }
             let Some(event) = self.pending.borrow_mut().pop_front() else {
-                break;
+                return;
             };
             self.invoke_notification(event);
         }
@@ -164,12 +279,6 @@ impl ApplicationHostState {
                     .handlers
                     .did_finish_launching
                     .invoke("AppKit did finish launching handler", |handler| handler());
-            }
-            DeferredNotification::WillTerminate => {
-                let _ = self
-                    .handlers
-                    .will_terminate
-                    .invoke("AppKit will terminate handler", |handler| handler());
             }
             DeferredNotification::OpenUrls(urls) => {
                 let _ = self
@@ -213,13 +322,9 @@ impl ApplicationHost {
         main_thread: MainThreadMarker,
         handlers: ApplicationHostHandlers,
     ) -> Option<Self> {
-        let state = Rc::new(ApplicationHostState {
-            handlers,
-            alive: Cell::new(true),
-            running: Cell::new(false),
-            pending: RefCell::new(VecDeque::new()),
-        });
-        let registration = CallbackRegistration::new(main_thread, state);
+        let state = Rc::new(ApplicationHostState::new(handlers));
+        let registration = CallbackRegistration::new(main_thread, Rc::clone(&state));
+        state.token.set(registration.token().get());
         let table = ApplicationHostCallbackTableV1::new();
         let delegate = unsafe {
             Handle::from_retained(ffi::application_host::appkit_application_host_install_v1(
@@ -249,7 +354,9 @@ impl Drop for ApplicationHost {
     fn drop(&mut self) {
         self.registration.state().alive.set(false);
         let _ = self.registration.deactivate();
-        unsafe { ffi::application_host::appkit_application_host_uninstall(self.delegate.as_ptr()) };
+        let _ = unsafe {
+            ffi::application_host::appkit_application_host_uninstall(self.delegate.as_ptr())
+        };
     }
 }
 
@@ -261,7 +368,7 @@ pub(crate) struct ApplicationHostCallbackTableV1 {
     will_finish_launching: extern "C" fn(u64),
     did_finish_launching: extern "C" fn(u64),
     should_handle_reopen: extern "C" fn(u64, bool) -> bool,
-    should_terminate: extern "C" fn(u64) -> bool,
+    should_terminate: extern "C" fn(u64) -> i32,
     will_terminate: extern "C" fn(u64),
     open_urls: extern "C" fn(u64, *const u8, usize, *const Utf8Range, usize),
     dock_menu_retained: extern "C" fn(u64) -> *mut c_void,
@@ -350,36 +457,26 @@ extern "C" fn did_finish_launching(token: u64) {
 }
 
 extern "C" fn should_handle_reopen(token: u64, has_visible_windows: bool) -> bool {
-    with_state(token, false, "AppKit reopen callback", |state| {
-        state
-            .query(|handlers| {
-                handlers
-                    .should_handle_reopen
-                    .invoke("AppKit reopen handler", |handler| {
-                        handler(has_visible_windows)
-                    })
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
+    with_state(token, true, "AppKit reopen callback", |state| {
+        state.reopen(has_visible_windows)
     })
 }
 
-extern "C" fn should_terminate(token: u64) -> bool {
-    with_state(token, true, "AppKit should terminate callback", |state| {
-        state
-            .query(|handlers| {
-                handlers
-                    .should_terminate
-                    .invoke("AppKit should terminate handler", |handler| handler())
-                    .unwrap_or(true)
-            })
-            .unwrap_or(false)
-    })
+extern "C" fn should_terminate(token: u64) -> i32 {
+    with_state(
+        token,
+        TerminationDecision::Now,
+        "AppKit should terminate callback",
+        ApplicationHostState::termination_decision,
+    ) as i32
 }
 
 extern "C" fn will_terminate(token: u64) {
     with_state(token, (), "AppKit will terminate callback", |state| {
-        state.notify(DeferredNotification::WillTerminate);
+        let _ = state
+            .handlers
+            .will_terminate
+            .invoke("AppKit will terminate handler", |handler| handler());
     });
 }
 
@@ -482,4 +579,64 @@ extern "C" fn screen_parameters_changed(token: u64) {
     with_state(token, (), "AppKit screen parameters callback", |state| {
         state.notify(DeferredNotification::ScreenParametersChanged);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+    use std::rc::Rc;
+
+    use super::{ApplicationHostHandlers, ApplicationHostState, TerminationDecision};
+
+    #[test]
+    fn termination_without_handler_is_immediate_during_another_callback() {
+        let state = ApplicationHostState::new(ApplicationHostHandlers::default());
+        let _turn = state.enter().expect("an active callback");
+        assert_eq!(state.termination_decision(), TerminationDecision::Now);
+        assert!(!state.pending_termination.get());
+    }
+
+    #[test]
+    fn reentrant_termination_waits_for_its_handler() {
+        let handlers = ApplicationHostHandlers::default();
+        let calls = Rc::new(Cell::new(0));
+        let seen = Rc::clone(&calls);
+        let _ = handlers.should_terminate.replace(Some(Box::new(move || {
+            seen.set(seen.get() + 1);
+            false
+        })));
+        let state = ApplicationHostState::new(handlers);
+        let _turn = state.enter().expect("an active callback");
+        assert_eq!(state.termination_decision(), TerminationDecision::Later);
+        assert_eq!(calls.get(), 0);
+        state.drain_pending(None);
+        assert_eq!(calls.get(), 1);
+        assert!(!state.pending_termination.get());
+    }
+
+    #[test]
+    fn termination_keeps_the_answer_when_the_handler_deactivates_the_host() {
+        let state = Rc::new(ApplicationHostState::new(ApplicationHostHandlers::default()));
+        let weak = Rc::downgrade(&state);
+        let _ = state
+            .handlers
+            .should_terminate
+            .replace(Some(Box::new(move || {
+                weak.upgrade().expect("the callback state").alive.set(false);
+                true
+            })));
+        assert_eq!(state.termination_decision(), TerminationDecision::Now);
+        assert!(!state.alive.get());
+    }
+
+    #[test]
+    fn reopen_defaults_to_yes_without_an_available_handler() {
+        let state = ApplicationHostState::new(ApplicationHostHandlers::default());
+        assert!(state.reopen(false));
+        let turn = state.enter().expect("an active callback");
+        assert!(state.reopen(false));
+        drop(turn);
+        state.alive.set(false);
+        assert!(state.reopen(false));
+    }
 }

@@ -16,7 +16,7 @@ typedef struct {
     void (*will_finish_launching)(uint64_t token);
     void (*did_finish_launching)(uint64_t token);
     bool (*should_handle_reopen)(uint64_t token, bool has_visible_windows);
-    bool (*should_terminate)(uint64_t token);
+    int32_t (*should_terminate)(uint64_t token);
     void (*will_terminate)(uint64_t token);
     void (*open_urls)(uint64_t token, const uint8_t *bytes, size_t byte_length, const AppKitApplicationHostUtf8Range *ranges, size_t count);
     AppKitApplicationHostRetainedMenu *(*dock_menu_retained)(uint64_t token);
