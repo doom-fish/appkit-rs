@@ -1,12 +1,18 @@
 use core::ffi::{c_char, c_void};
+use core::ops::{BitOr, BitOrAssign};
+use core::ptr::NonNull;
 use std::ffi::CString;
 
+use crate::appearance::AppearanceName;
 use crate::error::AppKitError;
+use crate::event::Event;
 use crate::ffi;
+use crate::ffi::application as native;
 use crate::image::Image;
 use crate::main_thread::MainThreadMarker;
 use crate::object::Handle;
-use crate::util::optional_c_string;
+use crate::util::{c_string, optional_c_string};
+use crate::window::Window;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AboutPanelOptions {
@@ -30,6 +36,45 @@ impl ActivationPolicy {
             Self::Prohibited => 2,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct PresentationOptions(u64);
+
+impl PresentationOptions {
+    pub const NONE: Self = Self(0);
+    pub const AUTO_HIDE_DOCK: Self = Self(1);
+    pub const AUTO_HIDE_MENU_BAR: Self = Self(1 << 2);
+
+    #[must_use]
+    pub const fn from_bits_retain(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u64 {
+        self.0
+    }
+}
+
+impl BitOr for PresentationOptions {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl BitOrAssign for PresentationOptions {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UserAttentionType {
+    Informational,
+    Critical,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +118,149 @@ impl Application {
         unsafe { ffi::appkit_application_set_application_icon_image(self.as_ptr(), image) };
     }
 
-    pub fn order_front_standard_about_panel(&self, options: &AboutPanelOptions) -> Result<(), AppKitError> {
+    #[must_use]
+    pub fn key_window(&self) -> Option<Window> {
+        unsafe { Handle::from_retained(native::appkit_application_key_window(self.as_ptr())) }
+            .map(Window::from_handle)
+    }
+
+    #[must_use]
+    pub fn main_window(&self) -> Option<Window> {
+        unsafe { Handle::from_retained(native::appkit_application_main_window(self.as_ptr())) }
+            .map(Window::from_handle)
+    }
+
+    #[must_use]
+    pub fn ordered_windows(&self) -> Vec<Window> {
+        let Some(array) = (unsafe {
+            Handle::from_retained(native::appkit_application_ordered_windows(self.as_ptr()))
+        }) else {
+            return Vec::new();
+        };
+        let count = unsafe { native::appkit_application_window_array_count(array.as_ptr()) };
+        (0..count)
+            .filter_map(|index| unsafe {
+                Handle::from_retained(native::appkit_application_window_array_at(
+                    array.as_ptr(),
+                    index,
+                ))
+            })
+            .map(Window::from_handle)
+            .collect()
+    }
+
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        unsafe { native::appkit_application_is_active(self.as_ptr()) }
+    }
+
+    #[must_use]
+    pub fn is_hidden(&self) -> bool {
+        unsafe { native::appkit_application_is_hidden(self.as_ptr()) }
+    }
+
+    pub fn activate_ignoring_other_apps(&self, ignore: bool) {
+        unsafe { native::appkit_application_activate_ignoring_other_apps(self.as_ptr(), ignore) };
+    }
+
+    pub fn hide(&self) {
+        unsafe { native::appkit_application_hide(self.as_ptr()) };
+    }
+
+    pub fn unhide(&self) {
+        unsafe { native::appkit_application_unhide(self.as_ptr()) };
+    }
+
+    pub fn hide_other_applications(&self) {
+        unsafe { native::appkit_application_hide_other_applications(self.as_ptr()) };
+    }
+
+    pub fn unhide_all_applications(&self) {
+        unsafe { native::appkit_application_unhide_all_applications(self.as_ptr()) };
+    }
+
+    #[must_use]
+    pub fn presentation_options(&self) -> PresentationOptions {
+        PresentationOptions::from_bits_retain(unsafe {
+            native::appkit_application_presentation_options(self.as_ptr())
+        })
+    }
+
+    pub fn set_presentation_options(&self, options: PresentationOptions) {
+        unsafe {
+            native::appkit_application_set_presentation_options(self.as_ptr(), options.bits());
+        };
+    }
+
+    #[must_use]
+    pub fn request_user_attention(&self, kind: UserAttentionType) -> i64 {
+        let kind = match kind {
+            UserAttentionType::Informational => 0,
+            UserAttentionType::Critical => 1,
+        };
+        unsafe { native::appkit_application_request_user_attention(self.as_ptr(), kind) }
+    }
+
+    pub fn cancel_user_attention(&self, request: i64) {
+        unsafe { native::appkit_application_cancel_user_attention(self.as_ptr(), request) };
+    }
+
+    #[must_use]
+    pub fn appearance(&self) -> Option<AppearanceName> {
+        AppearanceName::from_raw(unsafe { native::appkit_application_appearance(self.as_ptr()) })
+    }
+
+    #[must_use]
+    pub fn effective_appearance(&self) -> Option<AppearanceName> {
+        AppearanceName::from_raw(unsafe {
+            native::appkit_application_effective_appearance(self.as_ptr())
+        })
+    }
+
+    pub fn set_appearance(&self, appearance: Option<AppearanceName>) {
+        unsafe {
+            native::appkit_application_set_appearance(
+                self.as_ptr(),
+                appearance.map_or(-1, AppearanceName::raw),
+            );
+        };
+    }
+
+    pub fn order_front_character_palette(&self, sender: Option<&Window>) {
+        let sender = sender.map_or(core::ptr::null_mut(), Window::as_ptr);
+        unsafe { native::appkit_application_order_front_character_palette(self.as_ptr(), sender) };
+    }
+
+    pub fn change_windows_item(
+        &self,
+        window: &Window,
+        title: &str,
+        is_filename: bool,
+    ) -> Result<(), AppKitError> {
+        let title = c_string(title)?;
+        unsafe {
+            native::appkit_application_change_windows_item(
+                self.as_ptr(),
+                window.as_ptr(),
+                title.as_ptr(),
+                is_filename,
+            );
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn current_event(&self) -> Option<Event> {
+        let main_thread = MainThreadMarker::new()?;
+        let event =
+            NonNull::new(unsafe { native::appkit_application_current_event(self.as_ptr()) })?;
+        Some(unsafe { Event::from_raw_retained(event, main_thread) })
+    }
+
+    pub fn order_front_standard_about_panel(
+        &self,
+        options: &AboutPanelOptions,
+    ) -> Result<(), AppKitError> {
         let application_name = optional_c_string(options.application_name.as_deref())?;
         let application_version = optional_c_string(options.application_version.as_deref())?;
         let version = optional_c_string(options.version.as_deref())?;
