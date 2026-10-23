@@ -12,12 +12,13 @@ fn main() -> Result<(), AppKitError> {
     for screen in Screen::screens(main_thread) {
         let frame = screen.frame();
         println!(
-            "{} (display {:?}): {} x {} points at {}x",
+            "{} (display {:?}): {} x {} points at {}x, up to {} Hz",
             screen.localized_name(),
             screen.display_id(),
             frame.size.width,
             frame.size.height,
-            screen.backing_scale_factor()
+            screen.backing_scale_factor(),
+            screen.maximum_frames_per_second()
         );
     }
     if let Some(screen) = Screen::main(main_thread) {

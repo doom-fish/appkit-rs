@@ -70,6 +70,7 @@ extern "C" {
     pub fn appkit_screen_backing_scale_factor(screen: *mut c_void) -> f64;
     pub fn appkit_screen_display_id(screen: *mut c_void, out: *mut u32) -> bool;
     pub fn appkit_screen_localized_name(screen: *mut c_void) -> *mut c_char;
+    pub fn appkit_screen_maximum_frames_per_second(screen: *mut c_void) -> i64;
 
     pub fn appkit_application_shared() -> *mut c_void;
     pub fn appkit_application_set_application_icon_image(

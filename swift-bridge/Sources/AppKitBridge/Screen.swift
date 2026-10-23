@@ -52,3 +52,9 @@ public func appkit_screen_localized_name(_ handle: UnsafeMutableRawPointer) -> U
     let screen: NSScreen = appkitObject(handle)
     return strdup(screen.localizedName)
 }
+
+@_cdecl("appkit_screen_maximum_frames_per_second")
+public func appkit_screen_maximum_frames_per_second(_ handle: UnsafeMutableRawPointer) -> Int64 {
+    let screen: NSScreen = appkitObject(handle)
+    return Int64(screen.maximumFramesPerSecond)
+}

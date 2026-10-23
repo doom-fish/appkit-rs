@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ### Added
 
+- `Screen::maximum_frames_per_second` reads the highest refresh rate of a screen, for example 120 on a ProMotion display.
 - `EventRef` reads the event type, the modifier flags, positions, mouse buttons, key codes, characters, scroll and swipe deltas, phases, pressure and magnification. A field that the event type does not have gives `None`.
 - `Event::current`, the class queries for modifier flags and pressed mouse buttons, and synthetic key and mouse events.
 - `Pasteboard` reads and writes the general, find and unique pasteboards: types, data, strings, legacy file names and the change count. File names keep their UTF-8 bytes.

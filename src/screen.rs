@@ -61,4 +61,9 @@ impl Screen {
     pub fn localized_name(&self) -> String {
         unsafe { take_string(ffi::appkit_screen_localized_name(self.as_ptr())) }.unwrap_or_default()
     }
+
+    #[must_use]
+    pub fn maximum_frames_per_second(&self) -> i64 {
+        unsafe { ffi::appkit_screen_maximum_frames_per_second(self.as_ptr()) }
+    }
 }
