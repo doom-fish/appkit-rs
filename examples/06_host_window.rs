@@ -9,6 +9,7 @@ use appkit::{CGRect, MainThreadMarker, Screen};
 
 fn main() {
     let main_thread = MainThreadMarker::new().expect("the main thread");
+    exercise_invalid_configuration(main_thread);
     exercise_window(main_thread);
     exercise_panel(main_thread);
     exercise_self_close(main_thread);
@@ -16,6 +17,27 @@ fn main() {
     exercise_alternate_reshow(main_thread, HiddenReshowPath::OrderFrontRegardless);
     exercise_alternate_reshow(main_thread, HiddenReshowPath::ModalSession);
     println!("The hidden window and panel stop callbacks after close.");
+}
+
+fn exercise_invalid_configuration(main_thread: MainThreadMarker) {
+    let style = WindowStyleMask::TITLED | WindowStyleMask::CLOSABLE;
+    let nan_rect = HostedWindowConfiguration::new(CGRect::new(f64::NAN, 0.0, 180.0, 100.0), style);
+    assert!(HostedWindow::new(main_thread, nan_rect).is_none());
+    let negative_size = HostedWindowConfiguration::new(CGRect::new(0.0, 0.0, -1.0, 100.0), style);
+    assert!(HostedWindow::new(main_thread, negative_size).is_none());
+    let full_screen_style = HostedWindowConfiguration::new(
+        CGRect::new(0.0, 0.0, 180.0, 100.0),
+        style | WindowStyleMask::from_bits(1 << 14),
+    );
+    assert!(HostedWindow::new(main_thread, full_screen_style).is_none());
+    let invalid_panel = HostedWindowConfiguration::new(
+        CGRect::new(0.0, 0.0, 180.0, f64::INFINITY),
+        style | WindowStyleMask::NONACTIVATING_PANEL,
+    );
+    assert!(
+        HostedWindow::new_panel(main_thread, invalid_panel, HostedPanelOptions::default())
+            .is_none()
+    );
 }
 
 fn exercise_window(main_thread: MainThreadMarker) {

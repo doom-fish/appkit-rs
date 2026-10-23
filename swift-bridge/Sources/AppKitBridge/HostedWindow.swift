@@ -1,5 +1,6 @@
 import AppKit
 import AppKitCallbackABI
+import AppKitExceptionShim
 
 final class HostedWindowDelegate: NSObject, NSWindowDelegate {
     let token: UInt64
@@ -148,7 +149,7 @@ extension HostedWindowOwner where Self: NSWindow {
 
     func detach() {
         callbackDelegate?.deactivate()
-        delegate = nil
+        let _ = appkit_try { delegate = nil }
         callbackDelegate = nil
     }
 
@@ -161,24 +162,28 @@ extension HostedWindowOwner where Self: NSWindow {
         callbackDelegate?.resumeIfShown()
     }
 
-    func hostedClose(_ close: () -> Void) {
+    func hostedClose(_ close: () -> Bool) {
         guard !isClosing else { return }
         isClosing = true
         withExtendedLifetime(self) {
             defer { isClosing = false }
             callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_CLOSE))
-            close()
-            suspendAfterClose()
+            if close() {
+                suspendAfterClose()
+            }
         }
     }
 
-    func hostedAccessory(_ controller: NSTitlebarAccessoryViewController, add: () -> Void) {
-        add()
-        let accessory = controller.view
-        accessory.isHidden = true
-        var frame = accessory.frame
-        frame.size.height = 0
-        accessory.frame = frame
+    func hostedAccessory(_ controller: NSTitlebarAccessoryViewController, add: () -> Bool) {
+        guard add(), appkit_try({
+            let accessory = controller.view
+            accessory.isHidden = true
+            var frame = accessory.frame
+            frame.size.height = 0
+            accessory.frame = frame
+        }) == nil else {
+            return
+        }
         callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_ADDED_TITLEBAR_ACCESSORY))
     }
 }
@@ -194,37 +199,37 @@ class HostedWindow: NSWindow, HostedWindowOwner {
     override var canBecomeKey: Bool { allowsKeyWindow }
 
     override func close() {
-        hostedClose { super.close() }
+        hostedClose { appkit_try { super.close() } == nil }
     }
 
     override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
-        super.order(place, relativeTo: otherWin)
+        guard appkit_try({ super.order(place, relativeTo: otherWin) }) == nil else { return }
         resumeForOrder(place)
     }
 
     override func orderFrontRegardless() {
-        super.orderFrontRegardless()
+        guard appkit_try({ super.orderFrontRegardless() }) == nil else { return }
         callbackDelegate?.resumeIfShown()
     }
 
     override func becomeKey() {
-        super.becomeKey()
+        guard appkit_try({ super.becomeKey() }) == nil else { return }
         callbackDelegate?.resumeIfShown()
     }
 
     override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
         hostedAccessory(childViewController) {
-            super.addTitlebarAccessoryViewController(childViewController)
+            appkit_try { super.addTitlebarAccessoryViewController(childViewController) } == nil
         }
     }
 
     override func moveTabToNewWindow(_ sender: Any?) {
-        super.moveTabToNewWindow(sender)
+        guard appkit_try({ super.moveTabToNewWindow(sender) }) == nil else { return }
         callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_MOVE_TAB_TO_NEW_WINDOW))
     }
 
     override func mergeAllWindows(_ sender: Any?) {
-        super.mergeAllWindows(sender)
+        guard appkit_try({ super.mergeAllWindows(sender) }) == nil else { return }
         callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_MERGE_ALL_WINDOWS))
     }
 
@@ -237,7 +242,7 @@ class HostedWindow: NSWindow, HostedWindowOwner {
     }
 
     override func toggleTabBar(_ sender: Any?) {
-        super.toggleTabBar(sender)
+        guard appkit_try({ super.toggleTabBar(sender) }) == nil else { return }
         callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_TOGGLE_TAB_BAR))
     }
 }
@@ -253,37 +258,37 @@ class HostedPanel: NSPanel, HostedWindowOwner {
     override var canBecomeKey: Bool { allowsKeyWindow }
 
     override func close() {
-        hostedClose { super.close() }
+        hostedClose { appkit_try { super.close() } == nil }
     }
 
     override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
-        super.order(place, relativeTo: otherWin)
+        guard appkit_try({ super.order(place, relativeTo: otherWin) }) == nil else { return }
         resumeForOrder(place)
     }
 
     override func orderFrontRegardless() {
-        super.orderFrontRegardless()
+        guard appkit_try({ super.orderFrontRegardless() }) == nil else { return }
         callbackDelegate?.resumeIfShown()
     }
 
     override func becomeKey() {
-        super.becomeKey()
+        guard appkit_try({ super.becomeKey() }) == nil else { return }
         callbackDelegate?.resumeIfShown()
     }
 
     override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
         hostedAccessory(childViewController) {
-            super.addTitlebarAccessoryViewController(childViewController)
+            appkit_try { super.addTitlebarAccessoryViewController(childViewController) } == nil
         }
     }
 
     override func moveTabToNewWindow(_ sender: Any?) {
-        super.moveTabToNewWindow(sender)
+        guard appkit_try({ super.moveTabToNewWindow(sender) }) == nil else { return }
         callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_MOVE_TAB_TO_NEW_WINDOW))
     }
 
     override func mergeAllWindows(_ sender: Any?) {
-        super.mergeAllWindows(sender)
+        guard appkit_try({ super.mergeAllWindows(sender) }) == nil else { return }
         callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_MERGE_ALL_WINDOWS))
     }
 
@@ -296,7 +301,7 @@ class HostedPanel: NSPanel, HostedWindowOwner {
     }
 
     override func toggleTabBar(_ sender: Any?) {
-        super.toggleTabBar(sender)
+        guard appkit_try({ super.toggleTabBar(sender) }) == nil else { return }
         callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_TOGGLE_TAB_BAR))
     }
 }
@@ -308,19 +313,36 @@ private func createHostedWindow<T: NSWindow & HostedWindowOwner>(
     make: (NSRect, NSWindow.StyleMask, NSWindow.BackingStoreType, Bool, NSScreen?) -> T
 ) -> T? {
     guard Thread.isMainThread,
+          configuration.x.isFinite,
+          configuration.y.isFinite,
+          configuration.width.isFinite,
+          configuration.height.isFinite,
+          configuration.width >= 0,
+          configuration.height >= 0,
+          configuration.backing_store >= 0,
           let callback = HostedWindowDelegate(token: token, table: table),
           let backing = NSWindow.BackingStoreType(rawValue: UInt(configuration.backing_store)) else {
         return nil
     }
+    let style = NSWindow.StyleMask(rawValue: UInt(configuration.style_mask))
+    guard !style.contains(.fullScreen) else { return nil }
     let screen: NSScreen? = configuration.screen.map { appkitObject($0) }
-    let window = make(
-        NSRect(x: configuration.x, y: configuration.y, width: configuration.width, height: configuration.height),
-        NSWindow.StyleMask(rawValue: UInt(configuration.style_mask)),
-        backing,
-        configuration.defer_creation,
-        screen
-    )
-    window.attach(callback, configuration: configuration)
+    var created: T?
+    guard appkit_try({
+        created = make(
+            NSRect(x: configuration.x, y: configuration.y, width: configuration.width, height: configuration.height),
+            style,
+            backing,
+            configuration.defer_creation,
+            screen
+        )
+    }) == nil, let window = created else {
+        return nil
+    }
+    guard appkit_try({ window.attach(callback, configuration: configuration) }) == nil else {
+        window.detach()
+        return nil
+    }
     return window
 }
 
@@ -350,17 +372,22 @@ public func appkit_host_panel_new(
     }
     guard let panel else { return nil }
     let settings = options.pointee
-    if settings.is_floating_panel >= 0 {
-        panel.isFloatingPanel = settings.is_floating_panel != 0
-    }
-    if settings.becomes_key_only_if_needed >= 0 {
-        panel.becomesKeyOnlyIfNeeded = settings.becomes_key_only_if_needed != 0
-    }
-    if settings.works_when_modal >= 0 {
-        panel.worksWhenModal = settings.works_when_modal != 0
-    }
-    if settings.hides_on_deactivate >= 0 {
-        panel.hidesOnDeactivate = settings.hides_on_deactivate != 0
+    guard appkit_try({
+        if settings.is_floating_panel >= 0 {
+            panel.isFloatingPanel = settings.is_floating_panel != 0
+        }
+        if settings.becomes_key_only_if_needed >= 0 {
+            panel.becomesKeyOnlyIfNeeded = settings.becomes_key_only_if_needed != 0
+        }
+        if settings.works_when_modal >= 0 {
+            panel.worksWhenModal = settings.works_when_modal != 0
+        }
+        if settings.hides_on_deactivate >= 0 {
+            panel.hidesOnDeactivate = settings.hides_on_deactivate != 0
+        }
+    }) == nil else {
+        panel.detach()
+        return nil
     }
     return Unmanaged.passRetained(panel).toOpaque()
 }
@@ -417,16 +444,22 @@ public func appkit_host_window_verify_hidden_reshow(_ handle: UnsafeMutableRawPo
     let wasActive = application.isActive
     let alpha = window.alphaValue
     let ignoresMouseEvents = window.ignoresMouseEvents
-    window.alphaValue = 0
-    window.ignoresMouseEvents = true
     defer {
-        window.orderOut(nil)
-        window.alphaValue = alpha
-        window.ignoresMouseEvents = ignoresMouseEvents
+        if window.isVisible {
+            let _ = appkit_try { window.orderOut(nil) }
+        }
+        let _ = appkit_try { window.alphaValue = alpha }
+        let _ = appkit_try { window.ignoresMouseEvents = ignoresMouseEvents }
     }
-    window.orderBack(nil)
+    guard appkit_try({
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+    }) == nil else {
+        return false
+    }
+    guard appkit_try({ window.orderBack(nil) }) == nil else { return false }
     let shown = window.isVisible
-    window.close()
+    guard appkit_try({ window.close() }) == nil else { return false }
     return shown && !window.isVisible && application.isActive == wasActive
 }
 
@@ -442,29 +475,39 @@ public func appkit_host_window_verify_hidden_reshow_with_veto(
     let wasActive = application.isActive
     let alpha = window.alphaValue
     let ignoresMouseEvents = window.ignoresMouseEvents
-    window.alphaValue = 0
-    window.ignoresMouseEvents = true
     defer {
-        window.orderOut(nil)
-        window.alphaValue = alpha
-        window.ignoresMouseEvents = ignoresMouseEvents
+        if window.isVisible {
+            let _ = appkit_try { window.orderOut(nil) }
+        }
+        let _ = appkit_try { window.alphaValue = alpha }
+        let _ = appkit_try { window.ignoresMouseEvents = ignoresMouseEvents }
+    }
+    guard appkit_try({
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+    }) == nil else {
+        return false
     }
     switch path {
     case 0:
-        window.orderFrontRegardless()
+        guard appkit_try({ window.orderFrontRegardless() }) == nil else { return false }
     case 1:
-        let session = application.beginModalSession(for: window)
-        application.endModalSession(session)
+        var session: NSApplication.ModalSession?
+        guard appkit_try({ session = application.beginModalSession(for: window) }) == nil,
+              let session,
+              appkit_try({ application.endModalSession(session) }) == nil else {
+            return false
+        }
     default:
         return false
     }
     let shownWithoutFocus = window.isVisible && !window.isKeyWindow && application.isActive == wasActive
-    window.performClose(nil)
+    guard appkit_try({ window.performClose(nil) }) == nil else { return false }
     let vetoed = window.isVisible
     let callback = window.delegate as? HostedWindowDelegate
     callback?.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
     let notified = callback?.acceptsCallbacks ?? false
-    window.performClose(nil)
+    guard appkit_try({ window.performClose(nil) }) == nil else { return false }
     return shownWithoutFocus && vetoed && notified && !window.isVisible && application.isActive == wasActive
 }
 
