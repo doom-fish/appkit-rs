@@ -1,6 +1,5 @@
 use core::any::Any;
 use core::cell::RefCell;
-use core::ffi::c_void;
 use core::ops::Deref;
 use core::ptr::{self, NonNull};
 use std::collections::HashMap;
@@ -21,19 +20,17 @@ use crate::object::Handle;
 use crate::util::{c_string, optional_c_string};
 
 thread_local! {
-    static DETACHED: RefCell<HashMap<RegistrationToken, Box<dyn Any>>> = RefCell::new(HashMap::new());
+    static PENDING: RefCell<HashMap<RegistrationToken, Box<dyn Any>>> = RefCell::new(HashMap::new());
 }
 
 pub(crate) struct CompletionGuard<T: 'static> {
     registration: CallbackRegistration<T>,
-    handle: Handle,
 }
 
 impl<T: 'static> CompletionGuard<T> {
-    pub(crate) fn new(main_thread: MainThreadMarker, handle: Handle, state: Rc<T>) -> Self {
+    pub(crate) fn new(main_thread: MainThreadMarker, state: Rc<T>) -> Self {
         Self {
             registration: CallbackRegistration::new(main_thread, state),
-            handle,
         }
     }
 
@@ -41,25 +38,24 @@ impl<T: 'static> CompletionGuard<T> {
         self.registration.token()
     }
 
-    pub(crate) const fn as_ptr(&self) -> *mut c_void {
-        self.handle.as_ptr()
-    }
-
-    pub(crate) fn detach(self) {
+    pub(crate) fn retain(self) {
         let token = self.token();
-        let previous =
-            DETACHED.with(|detached| detached.borrow_mut().insert(token, Box::new(self)));
+        let previous = PENDING.with(|pending| pending.borrow_mut().insert(token, Box::new(self)));
         drop(previous);
     }
 
     pub(crate) fn finish(token: RegistrationToken, main_thread: MainThreadMarker) -> Option<Rc<T>> {
         let state = CallbackRegistration::<T>::snapshot(token, main_thread);
-        let detached = DETACHED
-            .try_with(|detached| detached.borrow_mut().remove(&token))
+        let pending = PENDING
+            .try_with(|pending| pending.borrow_mut().remove(&token))
             .ok()
             .flatten();
-        drop(detached);
+        drop(pending);
         state
+    }
+
+    pub(crate) fn is_active(token: RegistrationToken, main_thread: MainThreadMarker) -> bool {
+        CallbackRegistration::<T>::snapshot(token, main_thread).is_some()
     }
 }
 
@@ -69,11 +65,11 @@ pub(crate) extern "C" fn deactivate_completion(raw_token: u64) {
             return;
         }
         if let Some(token) = RegistrationToken::from_raw(raw_token) {
-            let detached = DETACHED
-                .try_with(|detached| detached.borrow_mut().remove(&token))
+            let pending = PENDING
+                .try_with(|pending| pending.borrow_mut().remove(&token))
                 .ok()
                 .flatten();
-            drop(detached);
+            drop(pending);
             (CallbackTableV1::for_state::<()>().deactivate)(raw_token);
         }
     });
@@ -130,38 +126,44 @@ impl FilePanel {
 
     pub fn set_prompt(&self, prompt: Option<&str>) -> Result<(), AppKitError> {
         let prompt = optional_c_string(prompt)?;
-        unsafe {
+        let success = unsafe {
             ffi::panel::appkit_panel_set_prompt(
                 self.handle.as_ptr(),
                 prompt
                     .as_ref()
                     .map_or(ptr::null(), |prompt| prompt.as_ptr()),
-            );
-        }
-        Ok(())
+            )
+        };
+        success
+            .then_some(())
+            .ok_or_else(|| AppKitError::InvalidArgument("panel prompt".into()))
     }
 
     pub fn set_message(&self, message: Option<&str>) -> Result<(), AppKitError> {
         let message = optional_c_string(message)?;
-        unsafe {
+        let success = unsafe {
             ffi::panel::appkit_panel_set_message(
                 self.handle.as_ptr(),
                 message
                     .as_ref()
                     .map_or(ptr::null(), |message| message.as_ptr()),
-            );
-        }
-        Ok(())
+            )
+        };
+        success
+            .then_some(())
+            .ok_or_else(|| AppKitError::InvalidArgument("panel message".into()))
     }
 
-    pub fn set_can_create_directories(&self, can_create: bool) {
+    #[must_use]
+    pub fn set_can_create_directories(&self, can_create: bool) -> bool {
         unsafe {
-            ffi::panel::appkit_panel_set_can_create_directories(self.handle.as_ptr(), can_create);
+            ffi::panel::appkit_panel_set_can_create_directories(self.handle.as_ptr(), can_create)
         }
     }
 
-    pub fn set_shows_hidden_files(&self, shows: bool) {
-        unsafe { ffi::panel::appkit_panel_set_shows_hidden_files(self.handle.as_ptr(), shows) };
+    #[must_use]
+    pub fn set_shows_hidden_files(&self, shows: bool) -> bool {
+        unsafe { ffi::panel::appkit_panel_set_shows_hidden_files(self.handle.as_ptr(), shows) }
     }
 }
 
@@ -179,34 +181,38 @@ impl OpenPanel {
         })
     }
 
-    pub fn set_can_choose_files(&self, can_choose: bool) {
+    #[must_use]
+    pub fn set_can_choose_files(&self, can_choose: bool) -> bool {
         unsafe {
-            ffi::panel::appkit_open_panel_set_can_choose_files(self.0.handle.as_ptr(), can_choose);
-        };
+            ffi::panel::appkit_open_panel_set_can_choose_files(self.0.handle.as_ptr(), can_choose)
+        }
     }
 
-    pub fn set_can_choose_directories(&self, can_choose: bool) {
+    #[must_use]
+    pub fn set_can_choose_directories(&self, can_choose: bool) -> bool {
         unsafe {
             ffi::panel::appkit_open_panel_set_can_choose_directories(
                 self.0.handle.as_ptr(),
                 can_choose,
-            );
+            )
         }
     }
 
-    pub fn set_allows_multiple_selection(&self, allows: bool) {
+    #[must_use]
+    pub fn set_allows_multiple_selection(&self, allows: bool) -> bool {
         unsafe {
             ffi::panel::appkit_open_panel_set_allows_multiple_selection(
                 self.0.handle.as_ptr(),
                 allows,
-            );
+            )
         }
     }
 
-    pub fn set_resolves_aliases(&self, resolves: bool) {
+    #[must_use]
+    pub fn set_resolves_aliases(&self, resolves: bool) -> bool {
         unsafe {
-            ffi::panel::appkit_open_panel_set_resolves_aliases(self.0.handle.as_ptr(), resolves);
-        };
+            ffi::panel::appkit_open_panel_set_resolves_aliases(self.0.handle.as_ptr(), resolves)
+        }
     }
 
     #[must_use]
@@ -214,12 +220,8 @@ impl OpenPanel {
         self,
         callback: impl FnOnce(Option<Vec<PathBuf>>) + 'static,
     ) -> Option<PanelSession> {
-        let guard = CompletionGuard::new(
-            self.0.main_thread,
-            self.0.handle,
-            PanelCallbackState::new(callback),
-        );
-        begin_panel(guard)
+        let guard = CompletionGuard::new(self.0.main_thread, PanelCallbackState::new(callback));
+        begin_panel(self.0.handle, self.0.main_thread, guard)
     }
 }
 
@@ -248,21 +250,21 @@ impl SavePanel {
     pub fn set_suggested_name(&self, name: &str) -> Result<(), AppKitError> {
         let name = c_string(name)?;
         unsafe {
-            ffi::panel::appkit_save_panel_set_suggested_name(self.0.handle.as_ptr(), name.as_ptr());
+            ffi::panel::appkit_save_panel_set_suggested_name(self.0.handle.as_ptr(), name.as_ptr())
         }
-        Ok(())
+        .then_some(())
+        .ok_or_else(|| AppKitError::InvalidArgument("panel name".into()))
     }
 
     #[must_use]
     pub fn begin(self, callback: impl FnOnce(Option<PathBuf>) + 'static) -> Option<PanelSession> {
         let guard = CompletionGuard::new(
             self.0.main_thread,
-            self.0.handle,
             PanelCallbackState::new(move |paths| {
                 callback(paths.and_then(|paths| paths.into_iter().next()));
             }),
         );
-        begin_panel(guard)
+        begin_panel(self.0.handle, self.0.main_thread, guard)
     }
 }
 
@@ -275,16 +277,28 @@ impl Deref for SavePanel {
 }
 
 pub struct PanelSession {
-    guard: CompletionGuard<PanelCallbackState>,
+    handle: Handle,
+    token: RegistrationToken,
+    main_thread: MainThreadMarker,
 }
 
 impl PanelSession {
+    #[must_use]
+    pub fn cancel(&self) -> bool {
+        CompletionGuard::<PanelCallbackState>::is_active(self.token, self.main_thread)
+            && unsafe { ffi::panel::appkit_panel_cancel(self.token.get()) }
+    }
+
     pub fn detach(self) {
-        self.guard.detach();
+        drop(self.handle);
     }
 }
 
-fn begin_panel(guard: CompletionGuard<PanelCallbackState>) -> Option<PanelSession> {
+fn begin_panel(
+    handle: Handle,
+    main_thread: MainThreadMarker,
+    guard: CompletionGuard<PanelCallbackState>,
+) -> Option<PanelSession> {
     let callbacks = ffi::panel::PanelCallbacksV1 {
         header: CallbackTableHeader {
             version: 1,
@@ -293,10 +307,20 @@ fn begin_panel(guard: CompletionGuard<PanelCallbackState>) -> Option<PanelSessio
         deactivate: deactivate_completion,
         complete: panel_completed,
     };
+    let token = guard.token();
+    guard.retain();
     let started = unsafe {
-        ffi::panel::appkit_panel_begin(guard.as_ptr(), guard.token().get(), &raw const callbacks)
+        ffi::panel::appkit_panel_begin(handle.as_ptr(), token.get(), &raw const callbacks)
     };
-    started.then_some(PanelSession { guard })
+    if !started {
+        deactivate_completion(token.get());
+        return None;
+    }
+    Some(PanelSession {
+        handle,
+        token,
+        main_thread,
+    })
 }
 
 extern "C" fn panel_completed(
@@ -369,7 +393,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
 
-    use super::{complete_on_main, PanelCallbackState};
+    use super::{complete_on_main, CompletionGuard, PanelCallbackState};
     use crate::callbacks::CallbackRegistration;
     use crate::ffi::panel::FileSystemPath;
     use crate::MainThreadMarker;
@@ -456,5 +480,31 @@ mod tests {
             1,
         );
         assert_eq!(&*received.borrow(), &[None, None]);
+    }
+
+    #[test]
+    fn native_owner_keeps_callback_after_caller_drops_its_state() {
+        let main_thread = unsafe { MainThreadMarker::new_unchecked() };
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let result = Rc::clone(&received);
+        let state = PanelCallbackState::new(move |paths| result.borrow_mut().push(paths));
+        let weak = Rc::downgrade(&state);
+        let pending = CompletionGuard::new(main_thread, state);
+        let token = pending.token();
+        pending.retain();
+
+        assert!(weak.upgrade().is_some());
+        assert!(CompletionGuard::<PanelCallbackState>::is_active(
+            token,
+            main_thread
+        ));
+        complete_on_main(main_thread, token, false, ptr::null(), 0);
+        complete_on_main(main_thread, token, false, ptr::null(), 0);
+        assert!(!CompletionGuard::<PanelCallbackState>::is_active(
+            token,
+            main_thread
+        ));
+        assert!(weak.upgrade().is_none());
+        assert_eq!(&*received.borrow(), &[None]);
     }
 }

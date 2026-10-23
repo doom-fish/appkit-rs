@@ -56,25 +56,29 @@ impl Alert {
         }
     }
 
-    pub fn set_style(&self, style: AlertStyle) {
-        unsafe { ffi::alert::appkit_alert_set_style(self.handle.as_ptr(), style as i32) };
+    #[must_use]
+    pub fn set_style(&self, style: AlertStyle) -> bool {
+        unsafe { ffi::alert::appkit_alert_set_style(self.handle.as_ptr(), style as i32) }
     }
 
     pub fn set_message(&self, message: &str) -> Result<(), AppKitError> {
         let message = c_string(message)?;
-        unsafe { ffi::alert::appkit_alert_set_message(self.handle.as_ptr(), message.as_ptr()) };
-        Ok(())
+        unsafe { ffi::alert::appkit_alert_set_message(self.handle.as_ptr(), message.as_ptr()) }
+            .then_some(())
+            .ok_or_else(|| AppKitError::InvalidArgument("alert message".into()))
     }
 
     pub fn set_informative_text(&self, text: Option<&str>) -> Result<(), AppKitError> {
         let text = optional_c_string(text)?;
-        unsafe {
+        let success = unsafe {
             ffi::alert::appkit_alert_set_informative_text(
                 self.handle.as_ptr(),
                 text.as_ref().map_or(ptr::null(), |text| text.as_ptr()),
-            );
-        }
-        Ok(())
+            )
+        };
+        success
+            .then_some(())
+            .ok_or_else(|| AppKitError::InvalidArgument("alert informative text".into()))
     }
 
     pub fn add_button(&self, title: &str, is_cancel: bool) -> Result<usize, AppKitError> {
@@ -91,11 +95,7 @@ impl Alert {
         window: &Window,
         callback: impl FnOnce(Option<usize>) + 'static,
     ) -> Option<AlertSession> {
-        let guard = CompletionGuard::new(
-            self.main_thread,
-            self.handle,
-            AlertCallbackState::new(callback),
-        );
+        let guard = CompletionGuard::new(self.main_thread, AlertCallbackState::new(callback));
         let callbacks = ffi::alert::AlertCallbacksV1 {
             header: CallbackTableHeader {
                 version: 1,
@@ -104,25 +104,43 @@ impl Alert {
             deactivate: deactivate_completion,
             complete: alert_completed,
         };
+        let token = guard.token();
+        guard.retain();
         let started = unsafe {
             ffi::alert::appkit_alert_begin_sheet(
-                guard.as_ptr(),
+                self.handle.as_ptr(),
                 window.as_ptr(),
-                guard.token().get(),
+                token.get(),
                 &raw const callbacks,
             )
         };
-        started.then_some(AlertSession { guard })
+        if !started {
+            deactivate_completion(token.get());
+            return None;
+        }
+        Some(AlertSession {
+            handle: self.handle,
+            token,
+            main_thread: self.main_thread,
+        })
     }
 }
 
 pub struct AlertSession {
-    guard: CompletionGuard<AlertCallbackState>,
+    handle: Handle,
+    token: RegistrationToken,
+    main_thread: MainThreadMarker,
 }
 
 impl AlertSession {
+    #[must_use]
+    pub fn cancel(&self) -> bool {
+        CompletionGuard::<AlertCallbackState>::is_active(self.token, self.main_thread)
+            && unsafe { ffi::alert::appkit_alert_cancel(self.token.get()) }
+    }
+
     pub fn detach(self) {
-        self.guard.detach();
+        drop(self.handle);
     }
 }
 
@@ -153,7 +171,7 @@ mod tests {
     use core::cell::{Cell, RefCell};
     use std::rc::Rc;
 
-    use super::{complete_on_main, AlertCallbackState};
+    use super::{complete_on_main, AlertCallbackState, CompletionGuard};
     use crate::callbacks::CallbackRegistration;
     use crate::MainThreadMarker;
 
@@ -200,5 +218,26 @@ mod tests {
         );
         complete_on_main(main_thread, registration.token(), -1);
         assert_eq!(received.get(), None);
+    }
+
+    #[test]
+    fn parent_close_aborts_pending_sheet_once() {
+        let main_thread = unsafe { MainThreadMarker::new_unchecked() };
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let result = Rc::clone(&received);
+        let state = AlertCallbackState::new(move |index| result.borrow_mut().push(index));
+        let weak = Rc::downgrade(&state);
+        let pending = CompletionGuard::new(main_thread, state);
+        let token = pending.token();
+        pending.retain();
+
+        complete_on_main(main_thread, token, -1001);
+        complete_on_main(main_thread, token, -1001);
+        assert_eq!(&*received.borrow(), &[None]);
+        assert!(weak.upgrade().is_none());
+        assert!(!CompletionGuard::<AlertCallbackState>::is_active(
+            token,
+            main_thread
+        ));
     }
 }
