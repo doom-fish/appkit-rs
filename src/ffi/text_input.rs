@@ -31,6 +31,7 @@ pub(crate) struct TextInputCallbackTableV1 {
         ) -> bool,
     >,
     pub action: Option<extern "C" fn(u64, u32, *const u8, usize, Utf16Range, Utf16Range)>,
+    pub command: Option<extern "C" fn(u64, *const u8, usize) -> bool>,
 }
 
 extern "C" {
@@ -44,7 +45,7 @@ extern "C" {
         view: *mut c_void,
         token: u64,
         event: *mut c_void,
-    ) -> bool;
+    ) -> u32;
     pub(crate) fn appkit_text_input_discard_marked_text(view: *mut c_void, token: u64) -> bool;
     pub(crate) fn appkit_text_input_invalidate_character_coordinates(
         view: *mut c_void,

@@ -5,7 +5,9 @@ use std::rc::{Rc, Weak};
 use appkit::event::{EventType, ModifierFlags};
 use appkit::host_view::{HostedView, MetalLayer};
 use appkit::host_window::{HostedWindow, HostedWindowConfiguration, WindowStyleMask};
-use appkit::text_input::{TextInputClient, TextInputHandler, TextInputRect, TextInputSubstring};
+use appkit::text_input::{
+    TextInputClient, TextInputEventStatus, TextInputHandler, TextInputRect, TextInputSubstring,
+};
 use appkit::{CGPoint, CGRect, CallbackTableHeader, Event, MainThreadMarker, Utf16Range};
 
 extern "C" {
@@ -82,6 +84,7 @@ struct TextState {
     selection: Utf16Range,
     marked: Option<Utf16Range>,
     calls: Vec<Call>,
+    handle_commands: bool,
 }
 
 struct RecordingHandler(Rc<RefCell<TextState>>);
@@ -174,11 +177,10 @@ impl TextInputHandler for RecordingHandler {
         (point == CGPoint::new(7.0, 9.0)).then_some(3)
     }
 
-    fn do_command_by_selector(&mut self, selector: &str) {
-        self.0
-            .borrow_mut()
-            .calls
-            .push(Call::Command(selector.to_owned()));
+    fn do_command_by_selector(&mut self, selector: &str) -> bool {
+        let mut state = self.0.borrow_mut();
+        state.calls.push(Call::Command(selector.to_owned()));
+        state.handle_commands
     }
 }
 
@@ -356,6 +358,7 @@ fn verify_queries(fixture: &Fixture) -> Rc<RefCell<TextState>> {
         selection: Utf16Range::new(1, 2).expect("the selection"),
         marked: None,
         calls: Vec::new(),
+        handle_commands: false,
     }));
     fixture
         .client
@@ -514,7 +517,7 @@ fn verify_actions(fixture: &Fixture, state: &Rc<RefCell<TextState>>) {
     );
 }
 
-fn verify_input_context(fixture: &Fixture) {
+fn verify_input_context(fixture: &Fixture, state: &Rc<RefCell<TextState>>) {
     let context = unsafe { appkit_text_input_example_has_context(fixture.view.as_ptr()) };
     assert_eq!(fixture.client.invalidate_character_coordinates(), context);
     assert_eq!(fixture.client.discard_marked_text(), context);
@@ -528,12 +531,138 @@ fn verify_input_context(fixture: &Fixture) {
         false,
     )
     .expect("a synthetic function key");
-    let handled = fixture.client.handle_event(key.as_ref());
-    if !context {
-        assert!(!handled);
+    fixture.client.set_handler(None);
+    let without_handler = fixture.client.handle_event(key.as_ref());
+    assert_eq!(
+        without_handler,
+        if context {
+            TextInputEventStatus::UnhandledCommand
+        } else {
+            TextInputEventStatus::NotConsumed
+        }
+    );
+    assert!(!without_handler.is_handled());
+    fixture
+        .client
+        .set_handler(Some(Box::new(RecordingHandler(Rc::clone(state)))));
+    let unhandled = fixture.client.handle_event(key.as_ref());
+    assert_eq!(unhandled, without_handler);
+    if context {
+        assert!(state
+            .borrow()
+            .calls
+            .contains(&Call::Command("noop:".to_owned())));
     }
-    println!("Hidden input context: available={context}, key handled={handled}.");
+    state.borrow_mut().handle_commands = true;
+    let handled = fixture.client.handle_event(key.as_ref());
+    assert_eq!(
+        handled,
+        if context {
+            TextInputEventStatus::HandledCommand
+        } else {
+            TextInputEventStatus::NotConsumed
+        }
+    );
+    assert_eq!(handled.is_handled(), context);
+    verify_common_commands(fixture, state, context);
+    verify_non_command_events(fixture, state, context);
+    println!("Hidden input context: available={context}, F1 status={handled:?}.");
     assert!(unsafe { appkit_text_input_example_hidden(fixture.view.as_ptr()) });
+}
+
+fn verify_common_commands(fixture: &Fixture, state: &Rc<RefCell<TextState>>, context: bool) {
+    let commands = [
+        (53, "\u{1b}", "cancelOperation:"),
+        (36, "\r", "insertNewline:"),
+        (51, "\u{7f}", "deleteBackward:"),
+        (48, "\t", "insertTab:"),
+    ];
+    for (key_code, characters, selector) in commands {
+        let key = Event::synthetic_key(
+            fixture.main_thread,
+            EventType::KeyDown,
+            ModifierFlags::default(),
+            key_code,
+            characters,
+            characters,
+            false,
+        )
+        .expect("a synthetic command key");
+        state.borrow_mut().handle_commands = false;
+        let unhandled = fixture.client.handle_event(key.as_ref());
+        assert_eq!(
+            unhandled,
+            if context {
+                TextInputEventStatus::UnhandledCommand
+            } else {
+                TextInputEventStatus::NotConsumed
+            },
+            "{selector}"
+        );
+        state.borrow_mut().handle_commands = true;
+        let before = state.borrow().calls.len();
+        let handled = fixture.client.handle_event(key.as_ref());
+        assert_eq!(
+            handled,
+            if context {
+                TextInputEventStatus::HandledCommand
+            } else {
+                TextInputEventStatus::NotConsumed
+            },
+            "{selector}"
+        );
+        if context {
+            assert!(state.borrow().calls[before..].contains(&Call::Command(selector.to_owned())));
+        }
+    }
+}
+
+fn verify_non_command_events(fixture: &Fixture, state: &Rc<RefCell<TextState>>, context: bool) {
+    let key_down = Event::synthetic_key(
+        fixture.main_thread,
+        EventType::KeyDown,
+        ModifierFlags::default(),
+        0,
+        "a",
+        "a",
+        false,
+    )
+    .expect("a printable key");
+    let before = state.borrow().calls.len();
+    let consumed = fixture.client.handle_event(key_down.as_ref());
+    assert_eq!(
+        consumed,
+        if context {
+            TextInputEventStatus::Consumed
+        } else {
+            TextInputEventStatus::NotConsumed
+        }
+    );
+    assert!(!state.borrow().calls[before..]
+        .iter()
+        .any(|call| matches!(call, Call::Command(_))));
+}
+
+fn verify_detached_context() {
+    let fixture = Fixture::new();
+    let key = Event::synthetic_key(
+        fixture.main_thread,
+        EventType::KeyDown,
+        ModifierFlags::default(),
+        122,
+        "\u{f704}",
+        "\u{f704}",
+        false,
+    )
+    .expect("a synthetic function key");
+    drop(fixture.view);
+    assert_eq!(
+        fixture.client.handle_event(key.as_ref()),
+        TextInputEventStatus::NotConsumed
+    );
+    assert!(!fixture.client.discard_marked_text());
+    assert!(!fixture.client.invalidate_character_coordinates());
+    fixture.window.as_window().close();
 }
 
 struct ReentrantHandler {
@@ -628,7 +757,8 @@ fn main() {
     let fixture = Fixture::new();
     let state = verify_queries(&fixture);
     verify_actions(&fixture, &state);
-    verify_input_context(&fixture);
+    verify_input_context(&fixture, &state);
     verify_reentrant_teardown(fixture);
+    verify_detached_context();
     println!("Hidden text input selectors preserve UTF-16 ranges and reentrant inserts.");
 }

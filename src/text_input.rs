@@ -28,6 +28,31 @@ pub struct TextInputSubstring {
     pub actual_range: Utf16Range,
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextInputEventStatus {
+    NotConsumed = 0,
+    Consumed = 1,
+    HandledCommand = 2,
+    UnhandledCommand = 3,
+}
+
+impl TextInputEventStatus {
+    const fn from_raw(raw: u32) -> Self {
+        match raw {
+            1 => Self::Consumed,
+            2 => Self::HandledCommand,
+            3 => Self::UnhandledCommand,
+            _ => Self::NotConsumed,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_handled(self) -> bool {
+        matches!(self, Self::Consumed | Self::HandledCommand)
+    }
+}
+
 pub trait TextInputHandler {
     fn has_marked_text(&mut self) -> bool {
         self.marked_range().is_some()
@@ -68,7 +93,9 @@ pub trait TextInputHandler {
         None
     }
 
-    fn do_command_by_selector(&mut self, _selector: &str) {}
+    fn do_command_by_selector(&mut self, _selector: &str) -> bool {
+        false
+    }
 }
 
 #[repr(u32)]
@@ -98,19 +125,17 @@ impl Query {
 
 #[repr(u32)]
 enum ActionKind {
-    InsertText = 1,
-    SetMarkedText = 2,
-    UnmarkText = 3,
-    DoCommand = 4,
+    Insert = 1,
+    Mark = 2,
+    Unmark = 3,
 }
 
 impl ActionKind {
     const fn from_raw(raw: u32) -> Option<Self> {
         match raw {
-            1 => Some(Self::InsertText),
-            2 => Some(Self::SetMarkedText),
-            3 => Some(Self::UnmarkText),
-            4 => Some(Self::DoCommand),
+            1 => Some(Self::Insert),
+            2 => Some(Self::Mark),
+            3 => Some(Self::Unmark),
             _ => None,
         }
     }
@@ -120,7 +145,6 @@ enum Action {
     Insert(String, Utf16Range),
     Mark(String, Utf16Range, Utf16Range),
     Unmark,
-    Command(String),
 }
 
 enum Response {
@@ -205,6 +229,23 @@ impl TextInputState {
         self.drain();
     }
 
+    fn command(&self, selector: &str) -> bool {
+        if !self.handler_present.get() || self.delivering.get() || self.query_depth.get() != 0 {
+            return false;
+        }
+        let handled = {
+            self.delivering.set(true);
+            let _guard = ActionGuard(self);
+            self.handler
+                .invoke("AppKit text input command", |handler| {
+                    handler.do_command_by_selector(selector)
+                })
+                .unwrap_or(false)
+        };
+        self.drain();
+        handled
+    }
+
     fn drain(&self) {
         if self.delivering.get() || self.query_depth.get() != 0 || self.pending.borrow().is_empty()
         {
@@ -229,7 +270,6 @@ impl TextInputState {
                         handler.set_marked_text(&text, selected, replacement);
                     }
                     Action::Unmark => handler.unmark_text(),
-                    Action::Command(selector) => handler.do_command_by_selector(&selector),
                 });
         }
     }
@@ -310,21 +350,27 @@ extern "C" fn on_action(
     };
     let _ = with_state(token, "AppKit text input action callback", |state| {
         let action = match selector {
-            ActionKind::UnmarkText => Action::Unmark,
-            ActionKind::InsertText | ActionKind::SetMarkedText | ActionKind::DoCommand => {
+            ActionKind::Unmark => Action::Unmark,
+            ActionKind::Insert | ActionKind::Mark => {
                 let Some(text) = (unsafe { copy_utf8(bytes, length) }) else {
                     return;
                 };
                 match selector {
-                    ActionKind::InsertText => Action::Insert(text, replacement),
-                    ActionKind::SetMarkedText => Action::Mark(text, selection, replacement),
-                    ActionKind::DoCommand => Action::Command(text),
-                    ActionKind::UnmarkText => unreachable!(),
+                    ActionKind::Insert => Action::Insert(text, replacement),
+                    ActionKind::Mark => Action::Mark(text, selection, replacement),
+                    ActionKind::Unmark => unreachable!(),
                 }
             }
         };
         state.action(action);
     });
+}
+
+extern "C" fn on_command(token: u64, bytes: *const u8, length: usize) -> bool {
+    with_state(token, "AppKit text input command callback", |state| {
+        (unsafe { copy_utf8(bytes, length) }).is_some_and(|selector| state.command(&selector))
+    })
+    .unwrap_or(false)
 }
 
 pub struct TextInputClient {
@@ -345,6 +391,7 @@ impl TextInputClient {
             deactivate: CallbackTableV1::new(None, None).deactivate,
             query: Some(on_query),
             action: Some(on_action),
+            command: Some(on_command),
         };
         if !unsafe {
             ffi::appkit_text_input_install(
@@ -368,14 +415,14 @@ impl TextInputClient {
     }
 
     #[must_use]
-    pub fn handle_event(&self, event: EventRef<'_>) -> bool {
-        unsafe {
+    pub fn handle_event(&self, event: EventRef<'_>) -> TextInputEventStatus {
+        TextInputEventStatus::from_raw(unsafe {
             ffi::appkit_text_input_handle_event(
                 self.view.as_ptr(),
                 self.registration.token().get(),
                 event.as_ptr(),
             )
-        }
+        })
     }
 
     #[must_use]

@@ -15,7 +15,18 @@ private enum TextAction: UInt32 {
     case insertText = 1
     case setMarkedText = 2
     case unmarkText = 3
-    case doCommand = 4
+}
+
+private enum TextEventStatus: UInt32 {
+    case notConsumed = 0
+    case consumed = 1
+    case handledCommand = 2
+    case unhandledCommand = 3
+}
+
+private final class TextInputEventFrame {
+    var receivedCommand = false
+    var handledCommand = false
 }
 
 private let invalidTextRange = AppKitUtf16Range(location: NSNotFound, length: 0)
@@ -50,6 +61,7 @@ private func textFromInput(_ value: Any) -> String? {
 private final class TextInputCallbackOwner {
     let token: UInt64
     let table: AppKitTextInputCallbackTableV1
+    private var eventFrames: [TextInputEventFrame] = []
 
     init?(token: UInt64, table: AppKitTextInputCallbackTableV1) {
         guard Thread.isMainThread,
@@ -58,7 +70,8 @@ private final class TextInputCallbackOwner {
               table.header.size >= MemoryLayout<AppKitTextInputCallbackTableV1>.size,
               table.deactivate != nil,
               table.query != nil,
-              table.action != nil else {
+              table.action != nil,
+              table.command != nil else {
             return nil
         }
         self.token = token
@@ -130,6 +143,36 @@ private final class TextInputCallbackOwner {
                 textRange(selection), textRange(replacement)
             )
         }
+    }
+
+    func command(_ selector: Selector) {
+        guard Thread.isMainThread else { return }
+        let frame = eventFrames.last
+        frame?.receivedCommand = true
+        let bytes = Array(NSStringFromSelector(selector).utf8)
+        let handled = bytes.withUnsafeBufferPointer { buffer in
+            table.command?(token, buffer.baseAddress, buffer.count) ?? false
+        }
+        if handled {
+            frame?.handledCommand = true
+        }
+    }
+
+    func handleEvent(_ event: NSEvent, in view: HostedView) -> TextEventStatus {
+        guard Thread.isMainThread else { return .notConsumed }
+        let frame = TextInputEventFrame()
+        eventFrames.append(frame)
+        defer { eventFrames.removeLast() }
+        var consumed = false
+        let succeeded = appkit_try {
+            if let context = view.inputContext {
+                consumed = context.handleEvent(event)
+            }
+        } == nil
+        if frame.receivedCommand {
+            return frame.handledCommand ? .handledCommand : .unhandledCommand
+        }
+        return succeeded && consumed ? .consumed : .notConsumed
     }
 }
 
@@ -258,9 +301,7 @@ extension HostedView: NSTextInputClient {
     func handleTextCommand(_ selector: Selector) {
         withExtendedLifetime(self) {
             guard Thread.isMainThread else { return }
-            (textInputOwner as? TextInputCallbackOwner)?.action(
-                .doCommand, text: NSStringFromSelector(selector)
-            )
+            (textInputOwner as? TextInputCallbackOwner)?.command(selector)
         }
     }
 }
@@ -300,19 +341,14 @@ public func appkit_text_input_handle_event(
     _ handle: UnsafeMutableRawPointer,
     _ token: UInt64,
     _ eventHandle: UnsafeMutableRawPointer
-) -> Bool {
-    guard Thread.isMainThread else { return false }
+) -> UInt32 {
+    guard Thread.isMainThread else { return TextEventStatus.notConsumed.rawValue }
     let view: HostedView = appkitObject(handle)
-    guard (view.textInputOwner as? TextInputCallbackOwner)?.token == token else { return false }
+    guard let owner = view.textInputOwner as? TextInputCallbackOwner,
+          owner.token == token else { return TextEventStatus.notConsumed.rawValue }
     let event: NSEvent = appkitObject(eventHandle)
     return withExtendedLifetime(view) {
-        var handled = false
-        guard appkit_try({
-            if let context = view.inputContext {
-                handled = context.handleEvent(event)
-            }
-        }) == nil else { return false }
-        return handled
+        owner.handleEvent(event, in: view).rawValue
     }
 }
 

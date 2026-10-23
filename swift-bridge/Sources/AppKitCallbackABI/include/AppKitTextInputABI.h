@@ -16,9 +16,15 @@ typedef enum {
 typedef enum {
     AppKitTextInputInsertText = 1,
     AppKitTextInputSetMarkedText = 2,
-    AppKitTextInputUnmarkText = 3,
-    AppKitTextInputDoCommand = 4
+    AppKitTextInputUnmarkText = 3
 } AppKitTextInputAction;
+
+typedef enum {
+    AppKitTextInputNotConsumed = 0,
+    AppKitTextInputConsumed = 1,
+    AppKitTextInputHandledCommand = 2,
+    AppKitTextInputUnhandledCommand = 3
+} AppKitTextInputEventStatus;
 
 typedef struct {
     AppKitUtf16Range range;
@@ -38,6 +44,7 @@ typedef struct {
     void (*action)(uint64_t token, uint32_t selector, const uint8_t *bytes,
                    size_t length, AppKitUtf16Range selection,
                    AppKitUtf16Range replacement);
+    bool (*command)(uint64_t token, const uint8_t *bytes, size_t length);
 } AppKitTextInputCallbackTableV1;
 
 #endif
