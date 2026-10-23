@@ -35,10 +35,26 @@ fn main() {
         CursorKind::ContextualMenu,
     ];
     for kind in kinds {
-        let cursor = Cursor::system(main_thread, kind);
+        let cursor = Cursor::system(main_thread, kind).expect("a system cursor");
         assert!(!cursor.as_ptr().is_null());
     }
+    assert!(unsafe { appkit::ffi::cursor::appkit_cursor_system(-1).is_null() });
+    assert!(unsafe { appkit::ffi::cursor::appkit_cursor_check_legacy_diagonals() });
     let image = Image::from_data(&PNG).expect("a valid cursor image");
+    assert!(Cursor::from_image(
+        main_thread,
+        &image,
+        CGSize::new(-1.0, 16.0),
+        CGPoint::new(0.0, 0.0)
+    )
+    .is_none());
+    assert!(Cursor::from_image(
+        main_thread,
+        &image,
+        CGSize::new(16.0, 16.0),
+        CGPoint::new(17.0, 0.0)
+    )
+    .is_none());
     let custom = Cursor::from_image(
         main_thread,
         &image,

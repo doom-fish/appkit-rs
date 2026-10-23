@@ -41,14 +41,13 @@ pub struct Cursor {
 
 impl Cursor {
     #[must_use]
-    pub fn system(main_thread: MainThreadMarker, kind: CursorKind) -> Self {
+    pub fn system(main_thread: MainThreadMarker, kind: CursorKind) -> Option<Self> {
         let handle =
-            unsafe { Handle::from_retained(ffi::cursor::appkit_cursor_system(kind as i32)) }
-                .unwrap_or_else(|| panic!("AppKit provides a {kind:?} system cursor"));
-        Self {
+            unsafe { Handle::from_retained(ffi::cursor::appkit_cursor_system(kind as i32)) }?;
+        Some(Self {
             handle,
             _main_thread: main_thread,
-        }
+        })
     }
 
     #[must_use]
@@ -87,19 +86,23 @@ impl Cursor {
         self.handle.as_ptr()
     }
 
-    pub fn set(&self) {
-        unsafe { ffi::cursor::appkit_cursor_set(self.as_ptr()) };
+    #[must_use]
+    pub fn set(&self) -> bool {
+        unsafe { ffi::cursor::appkit_cursor_set(self.as_ptr()) }
     }
 
-    pub fn hide(_main_thread: MainThreadMarker) {
-        unsafe { ffi::cursor::appkit_cursor_hide() };
+    #[must_use]
+    pub fn hide(_main_thread: MainThreadMarker) -> bool {
+        unsafe { ffi::cursor::appkit_cursor_hide() }
     }
 
-    pub fn unhide(_main_thread: MainThreadMarker) {
-        unsafe { ffi::cursor::appkit_cursor_unhide() };
+    #[must_use]
+    pub fn unhide(_main_thread: MainThreadMarker) -> bool {
+        unsafe { ffi::cursor::appkit_cursor_unhide() }
     }
 
-    pub fn set_hidden_until_mouse_moves(_main_thread: MainThreadMarker, hidden: bool) {
-        unsafe { ffi::cursor::appkit_cursor_set_hidden_until_mouse_moves(hidden) };
+    #[must_use]
+    pub fn set_hidden_until_mouse_moves(_main_thread: MainThreadMarker, hidden: bool) -> bool {
+        unsafe { ffi::cursor::appkit_cursor_set_hidden_until_mouse_moves(hidden) }
     }
 }
