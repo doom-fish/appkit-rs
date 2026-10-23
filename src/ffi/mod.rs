@@ -9,6 +9,7 @@ pub mod application_host;
 pub mod blur;
 pub mod callbacks;
 pub mod cursor;
+pub mod document_controller;
 pub mod drag;
 pub mod event;
 pub mod host_view;
