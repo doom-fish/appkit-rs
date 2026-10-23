@@ -84,6 +84,8 @@ fn check_sheet_kind(
         AlertSheetStart::AppKitDidNotStart => panic!("AppKit did not start the {label} sheet"),
     };
     drop(session);
+    assert!(unsafe { appkit::ffi::alert::appkit_alert_run_test_main_queue() });
+    assert!(received.borrow().is_empty(), "{label}");
     assert!(unsafe { appkit::ffi::alert::appkit_alert_finish_offscreen_sheet(parent.as_ptr(), 0) });
     assert!(received.borrow().is_empty(), "{label}");
     assert!(unsafe { appkit::ffi::alert::appkit_alert_run_test_main_queue() });
@@ -99,8 +101,7 @@ fn check_sheet_kind(
     Ok(())
 }
 
-fn main() -> Result<(), AppKitError> {
-    let main_thread = MainThreadMarker::new().expect("an example starts on the main thread");
+fn configure_dialogs(main_thread: MainThreadMarker) -> Result<(), AppKitError> {
     let directory = env::current_dir().expect("the current directory");
 
     let open = OpenPanel::new(main_thread);
@@ -136,7 +137,12 @@ fn main() -> Result<(), AppKitError> {
     assert_eq!(alert.add_button("Save", false)?, 0);
     assert_eq!(alert.add_button("Do Not Save", false)?, 1);
     assert_eq!(alert.add_button("Cancel", true)?, 2);
+    Ok(())
+}
 
+fn main() -> Result<(), AppKitError> {
+    let main_thread = MainThreadMarker::new().expect("an example starts on the main thread");
+    configure_dialogs(main_thread)?;
     let panel_received = Rc::new(Cell::new(0_i64));
     let panel_registration = CallbackRegistration::new(main_thread, Rc::clone(&panel_received));
     let panel_callbacks = PanelCallbacksV1 {
@@ -183,6 +189,22 @@ fn main() -> Result<(), AppKitError> {
     };
     assert!(unsafe {
         appkit::ffi::alert::appkit_alert_check_close_observer(
+            parent.as_ptr(),
+            registration.token().get(),
+            &raw const callbacks,
+        )
+    });
+    assert_eq!(received.response.get(), -1001);
+    assert_eq!(received.calls.get(), 1);
+
+    let parent = offscreen_window(main_thread);
+    let received = Rc::new(CloseResult {
+        response: Cell::new(0),
+        calls: Cell::new(0),
+    });
+    let registration = CallbackRegistration::new(main_thread, Rc::clone(&received));
+    assert!(unsafe {
+        appkit::ffi::alert::appkit_alert_check_will_close_start_sheet(
             parent.as_ptr(),
             registration.token().get(),
             &raw const callbacks,

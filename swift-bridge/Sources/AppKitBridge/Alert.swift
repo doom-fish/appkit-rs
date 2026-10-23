@@ -61,6 +61,7 @@ private final class AppKitAlertSheetOwner {
     private weak var parent: NSWindow?
     private var closeObserver: NSObjectProtocol?
     private var isEnding = false
+    private var responseQueued = false
 
     init(alert: NSAlert, parent: NSWindow, callback: AppKitCompletionOwner, callbacks: AppKitAlertCallbacksV1) {
         self.alert = alert
@@ -99,14 +100,43 @@ private final class AppKitAlertSheetOwner {
             alert.beginSheetModal(for: parent) { [weak self] response in
                 guard let self else { return }
                 let result = Int64(response.rawValue)
-                DispatchQueue.main.async { [self] in self.complete(result) }
+                if Thread.isMainThread {
+                    self.responseQueued = true
+                    DispatchQueue.main.async { [self] in self.complete(result) }
+                } else {
+                    DispatchQueue.main.async { [self] in
+                        self.responseQueued = true
+                        self.complete(result)
+                    }
+                }
             }
         }) == nil else {
             removeObserver()
             alertOwners.removeValue(forKey: callback.token)
             return false
         }
+        DispatchQueue.main.async { [weak self] in self?.abortIfOrphaned() }
         return true
+    }
+
+    private func abortIfOrphaned() {
+        guard !isEnding, !responseQueued else { return }
+        guard let parent else {
+            _ = abort()
+            return
+        }
+        var attached = false
+        var hidden = false
+        guard appkit_try({
+            attached = parent.attachedSheet === alert.window
+            hidden = !parent.isVisible && !parent.isMiniaturized
+        }) == nil else {
+            _ = abort()
+            return
+        }
+        if attached && hidden {
+            _ = abort()
+        }
     }
 
     func abort() -> Bool {
@@ -345,4 +375,52 @@ public func appkit_alert_check_close_observer(
     let deferred = alertOwners[token] != nil
     guard appkit_try({ RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03)) }) == nil else { return false }
     return deferred && alertOwners[token] == nil
+}
+
+@_cdecl("appkit_alert_check_will_close_start_sheet")
+public func appkit_alert_check_will_close_start_sheet(
+    _ window: UnsafeMutableRawPointer,
+    _ token: UInt64,
+    _ callbacks: UnsafePointer<AppKitAlertCallbacksV1>?
+) -> Bool {
+    guard Thread.isMainThread,
+          let callbacks = callbacks?.pointee,
+          callbacks.header.version == 1,
+          callbacks.header.size >= MemoryLayout<AppKitAlertCallbacksV1>.size,
+          callbacks.deactivate != nil,
+          callbacks.complete != nil else { return false }
+    let parent: NSWindow = appkitObject(window)
+    guard parent is AppKitOffscreenTestWindow, isOffscreen(parent),
+          appkit_try({ parent.orderFront(nil) }) == nil,
+          parent.isVisible, isOffscreen(parent) else { return false }
+    var alert: NSAlert?
+    guard appkit_try({ alert = NSAlert() }) == nil, let alert else { return false }
+    var started = false
+    var observer: NSObjectProtocol?
+    guard appkit_try({
+        observer = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: parent,
+            queue: nil
+        ) { _ in
+            var table = callbacks
+            started = withUnsafePointer(to: &table) { pointer in
+                appkit_alert_begin_sheet(
+                    Unmanaged.passUnretained(alert).toOpaque(),
+                    Unmanaged.passUnretained(parent).toOpaque(),
+                    token,
+                    pointer
+                )
+            }
+        }
+    }) == nil, let observer else { return false }
+    let closed = appkit_try { parent.close() } == nil
+    let _ = appkit_try { NotificationCenter.default.removeObserver(observer) }
+    guard closed else {
+        if started { _ = appkit_alert_cancel(token) }
+        return false
+    }
+    let deferred = alertOwners[token] != nil
+    guard appkit_try({ RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05)) }) == nil else { return false }
+    return started && deferred && alertOwners[token] == nil
 }

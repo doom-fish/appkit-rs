@@ -38,6 +38,7 @@ private final class AppKitPanelCompletionOwner {
     let panel: NSSavePanel
     let callback: AppKitCompletionOwner
     let callbacks: AppKitPanelCallbacksV1
+    private var cancelled = false
 
     init(panel: NSSavePanel, callback: AppKitCompletionOwner, callbacks: AppKitPanelCallbacksV1) {
         self.panel = panel
@@ -66,7 +67,7 @@ private final class AppKitPanelCompletionOwner {
         guard callback.finish() else { return }
         withExtendedLifetime(self) {
             panelOwners.removeValue(forKey: callback.token)
-            guard response == .OK, let paths = panelPaths(panel) else {
+            guard !cancelled, response == .OK, let paths = panelPaths(panel) else {
                 callbacks.complete?(callback.token, false, nil, 0)
                 return
             }
@@ -88,7 +89,12 @@ private final class AppKitPanelCompletionOwner {
     }
 
     func cancel() -> Bool {
-        guard appkit_try({ panel.cancel(nil) }) == nil else { return false }
+        guard !cancelled else { return true }
+        cancelled = true
+        guard appkit_try({ panel.cancel(nil) }) == nil else {
+            cancelled = false
+            return false
+        }
         DispatchQueue.main.async { [self] in complete(.cancel) }
         return true
     }
@@ -244,7 +250,7 @@ public func appkit_panel_check_completion_after_drop(
         wasHidden = !panel.isVisible
     }
     panelOwners[token] = operation
-    operation.nativeResponse(.cancel)
+    operation.nativeResponse(.OK)
     guard operation.cancel() else {
         operation.complete(.cancel)
         return false

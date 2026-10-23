@@ -40,4 +40,9 @@ extern "C" {
         token: u64,
         callbacks: *const AlertCallbacksV1,
     ) -> bool;
+    pub fn appkit_alert_check_will_close_start_sheet(
+        window: *mut c_void,
+        token: u64,
+        callbacks: *const AlertCallbacksV1,
+    ) -> bool;
 }
