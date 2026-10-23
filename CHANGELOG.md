@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ### Added
 
+- `ApplicationHost` installs an application delegate on the shared `NSApplication`. It forwards launch, reopen, quit, URL, Dock menu, screen and menu-item events through token callbacks. Reopen defaults to YES, and a quit request from inside a callback gets an answer at once.
 - `HostedWindow` makes `NSWindow` and `NSPanel` subclasses with a retained delegate and token callbacks for close, focus, movement, size, screen, occlusion, full-screen, tab and titlebar events. A window that closes and shows again keeps its callbacks.
 - `Screen::maximum_frames_per_second` reads the highest refresh rate of a screen, for example 120 on a ProMotion display.
 - `EventRef` reads the event type, the modifier flags, positions, mouse buttons, key codes, characters, scroll and swipe deltas, phases, pressure and magnification. A field that the event type does not have gives `None`.
