@@ -107,9 +107,12 @@ final class OffscreenHostViewWindow: NSWindow {
 class HostedView: NSView, CALayerDelegate {
     private let hostedLayer: CAMetalLayer
     private var callbackOwner: HostViewCallbackOwner?
+    fileprivate let titlebarRefreshView: NSView
     fileprivate var ownsTitlebarDrag = false
     fileprivate var titlebarDragQueryCount: UInt64 = 0
     fileprivate var lastTitlebarDragRect: NSRect = .zero
+    fileprivate var firstResponderBecomeCount: UInt64 = 0
+    fileprivate var firstResponderResignCount: UInt64 = 0
     fileprivate var trackingOptions: NSTrackingArea.Options = []
     private var hostedTrackingArea: NSTrackingArea?
     var textInputOwner: AnyObject?
@@ -117,11 +120,15 @@ class HostedView: NSView, CALayerDelegate {
     init(frame: CGRect, layer: CAMetalLayer, callbacks: HostViewCallbackOwner) {
         hostedLayer = layer
         callbackOwner = callbacks
+        titlebarRefreshView = NSView(frame: CGRect(origin: .zero, size: frame.size))
         super.init(frame: frame)
         autoresizingMask = [.width, .height]
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
         hostedLayer.delegate = self
+        titlebarRefreshView.autoresizingMask = [.width, .height]
+        titlebarRefreshView.isHidden = true
+        addSubview(titlebarRefreshView)
     }
 
     required init?(coder: NSCoder) {
@@ -181,6 +188,16 @@ class HostedView: NSView, CALayerDelegate {
         withExtendedLifetime(self) {
             callbackOwner?.query(.acceptsFirstResponder) ?? super.acceptsFirstResponder
         }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        firstResponderBecomeCount &+= 1
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        firstResponderResignCount &+= 1
+        return super.resignFirstResponder()
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -423,12 +440,12 @@ public func appkit_host_view_set_owns_titlebar_drag(_ handle: UnsafeMutableRawPo
     view.ownsTitlebarDrag = owns
     guard view.window != nil, !view.isHidden else { return true }
     guard appkit_try({
-        view.isHidden = true
-        view.isHidden = false
+        view.titlebarRefreshView.isHidden = false
+        view.titlebarRefreshView.isHidden = true
         CATransaction.flush()
     }) == nil else {
         view.ownsTitlebarDrag = previous
-        _ = appkit_try { view.isHidden = false }
+        _ = appkit_try { view.titlebarRefreshView.isHidden = true }
         return false
     }
     return true
@@ -573,6 +590,24 @@ public func appkit_host_view_example_titlebar_query(
     let view: HostedView = appkitObject(handle)
     out.pointee = view.lastTitlebarDragRect
     return view.titlebarDragQueryCount
+}
+
+@_cdecl("appkit_host_view_example_titlebar_refresh_view_fills_bounds")
+public func appkit_host_view_example_titlebar_refresh_view_fills_bounds(_ handle: UnsafeMutableRawPointer) -> Bool {
+    let view: HostedView = appkitObject(handle)
+    return view.titlebarRefreshView.isHidden && view.titlebarRefreshView.frame == view.bounds
+}
+
+@_cdecl("appkit_host_view_example_first_responder_state")
+public func appkit_host_view_example_first_responder_state(
+    _ handle: UnsafeMutableRawPointer,
+    _ becomes: UnsafeMutablePointer<UInt64>,
+    _ resigns: UnsafeMutablePointer<UInt64>
+) -> Bool {
+    let view: HostedView = appkitObject(handle)
+    becomes.pointee = view.firstResponderBecomeCount
+    resigns.pointee = view.firstResponderResignCount
+    return view.window?.firstResponder === view
 }
 
 @_cdecl("appkit_host_view_example_offscreen_titled_window_new")

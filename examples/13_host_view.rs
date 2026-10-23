@@ -25,6 +25,12 @@ extern "C" {
     fn appkit_host_view_example_application_is_active() -> bool;
     fn appkit_host_view_example_redraw(view: *mut c_void, resize: bool) -> bool;
     fn appkit_host_view_example_titlebar_query(view: *mut c_void, out: *mut CGRect) -> u64;
+    fn appkit_host_view_example_titlebar_refresh_view_fills_bounds(view: *mut c_void) -> bool;
+    fn appkit_host_view_example_first_responder_state(
+        view: *mut c_void,
+        becomes: *mut u64,
+        resigns: *mut u64,
+    ) -> bool;
     fn appkit_host_view_example_offscreen_titled_window_new(
         x: f64,
         y: f64,
@@ -642,8 +648,22 @@ fn verify_offscreen_titlebar_drag() {
     let view = unsafe { HostedView::new(main_thread, parent.bounds(), layer.as_ptr()) }
         .expect("a titlebar view");
     assert!(view.attach_to(&parent));
+    assert!(unsafe { appkit_host_view_example_titlebar_refresh_view_fills_bounds(view.as_ptr()) });
     assert!(view.set_owns_titlebar_drag(true));
     show_offscreen(&view, &native, main_thread);
+    assert!(native.make_first_responder(&view.as_view()));
+
+    let mut becomes = 0;
+    let mut resigns = 0;
+    assert!(unsafe {
+        appkit_host_view_example_first_responder_state(
+            view.as_ptr(),
+            &raw mut becomes,
+            &raw mut resigns,
+        )
+    });
+    assert!(becomes > 0);
+    let expected_responder_changes = (becomes, resigns);
 
     let mut cached_rect = CGRect::new(-1.0, -1.0, -1.0, -1.0);
     let before =
@@ -656,12 +676,31 @@ fn verify_offscreen_titlebar_drag() {
         unsafe { appkit_host_view_example_titlebar_query(view.as_ptr(), &raw mut cached_rect) };
     assert!(after_releasing > before);
     assert_eq!(cached_rect, CGRect::new(0.0, 0.0, 0.0, 0.0));
+    assert!(unsafe {
+        appkit_host_view_example_first_responder_state(
+            view.as_ptr(),
+            &raw mut becomes,
+            &raw mut resigns,
+        )
+    });
+    assert_eq!((becomes, resigns), expected_responder_changes);
 
     assert!(view.set_owns_titlebar_drag(true));
     let after_owning =
         unsafe { appkit_host_view_example_titlebar_query(view.as_ptr(), &raw mut cached_rect) };
     assert!(after_owning > after_releasing);
     assert_eq!(cached_rect, view.as_view().bounds());
+    assert!(unsafe {
+        appkit_host_view_example_first_responder_state(
+            view.as_ptr(),
+            &raw mut becomes,
+            &raw mut resigns,
+        )
+    });
+    assert_eq!((becomes, resigns), expected_responder_changes);
+    assert!(unsafe { appkit_host_view_example_titlebar_refresh_view_fills_bounds(view.as_ptr()) });
+    assert!(unsafe { appkit_host_view_example_redraw(view.as_ptr(), true) });
+    assert!(unsafe { appkit_host_view_example_titlebar_refresh_view_fills_bounds(view.as_ptr()) });
 
     drop(view);
     native.close();
