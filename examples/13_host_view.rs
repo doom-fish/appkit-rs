@@ -13,7 +13,15 @@ extern "C" {
     fn appkit_retain(object: *mut c_void);
     fn appkit_release(object: *mut c_void);
     fn appkit_host_view_example_arrow_cursor() -> *mut c_void;
+    fn appkit_host_view_example_autoreleasepool(
+        callback: extern "C" fn(*mut c_void),
+        context: *mut c_void,
+    );
+    fn appkit_host_view_example_weak_reference(view: *mut c_void) -> *mut c_void;
+    fn appkit_host_view_example_weak_reference_is_alive(reference: *mut c_void) -> bool;
+    fn appkit_host_view_example_titlebar_drag_rect(view: *mut c_void, out: *mut CGRect) -> bool;
     fn appkit_host_view_send_event(view: *mut c_void, selector: u32, event: *mut c_void) -> bool;
+    fn appkit_host_view_set_tracking_options(view: *mut c_void, options: u64) -> bool;
     fn appkit_host_view_notify_appearance(view: *mut c_void);
     fn appkit_host_view_display_layer(view: *mut c_void);
     fn appkit_host_view_accepts_first_mouse(view: *mut c_void, event: *mut c_void) -> bool;
@@ -117,6 +125,14 @@ impl Fixture {
             | TrackingAreaOptions::ACTIVE_ALWAYS
             | TrackingAreaOptions::IN_VISIBLE_RECT;
         assert!(self.view.set_tracking_options(options));
+        assert_eq!(self.view.tracking_options(), options);
+        let missing_visible_rect = TrackingAreaOptions::MOUSE_ENTERED_AND_EXITED
+            | TrackingAreaOptions::MOUSE_MOVED
+            | TrackingAreaOptions::ACTIVE_ALWAYS;
+        assert!(!self.view.set_tracking_options(missing_visible_rect));
+        assert!(!unsafe {
+            appkit_host_view_set_tracking_options(self.view.as_ptr(), missing_visible_rect.bits())
+        });
         assert_eq!(self.view.tracking_options(), options);
         assert!(!self
             .view
@@ -305,6 +321,28 @@ impl Fixture {
         cursor
     }
 
+    fn verify_titlebar_drag(&self) {
+        let empty = CGRect::new(0.0, 0.0, 0.0, 0.0);
+        let mut rect = CGRect::new(-1.0, -1.0, -1.0, -1.0);
+        assert!(unsafe {
+            appkit_host_view_example_titlebar_drag_rect(self.view.as_ptr(), &raw mut rect)
+        });
+        assert_eq!(rect, empty);
+
+        self.view.set_owns_titlebar_drag(true);
+        assert!(unsafe {
+            appkit_host_view_example_titlebar_drag_rect(self.view.as_ptr(), &raw mut rect)
+        });
+        assert_eq!(rect, self.view.as_view().bounds());
+        assert_eq!(rect.size, CGSize::new(100.0, 70.0));
+
+        self.view.set_owns_titlebar_drag(false);
+        assert!(unsafe {
+            appkit_host_view_example_titlebar_drag_rect(self.view.as_ptr(), &raw mut rect)
+        });
+        assert_eq!(rect, empty);
+    }
+
     fn verify_reentrant_teardown(self, key: Event, mouse: &Event, cursor: NonNull<c_void>) {
         let native_view = NonNull::new(self.view.as_ptr()).expect("a native view");
         unsafe { appkit_retain(native_view.as_ptr()) };
@@ -392,12 +430,129 @@ impl Fixture {
     }
 }
 
+struct SharedLayerCase {
+    main_thread: MainThreadMarker,
+    layer: MetalLayer,
+    first_window: Window,
+    second_window: Window,
+    replacement: Option<HostedView>,
+    weak_original: Option<NonNull<c_void>>,
+    displays: Rc<Cell<usize>>,
+    detached_display_delivered: bool,
+    error: Option<&'static str>,
+}
+
+fn build_shared_layer_case(case: &mut SharedLayerCase) -> Result<(), &'static str> {
+    let frame = CGRect::new(0.0, 0.0, 80.0, 60.0);
+    let original = unsafe { HostedView::new(case.main_thread, frame, case.layer.as_ptr()) }
+        .ok_or("the original view is missing")?;
+    let first_parent = case
+        .first_window
+        .content_view()
+        .ok_or("the first content view is missing")?;
+    if !original.attach_to(&first_parent) {
+        return Err("the original view did not attach");
+    }
+    let replacement = unsafe { HostedView::new(case.main_thread, frame, case.layer.as_ptr()) }
+        .ok_or("the replacement view is missing")?;
+    let second_parent = case
+        .second_window
+        .content_view()
+        .ok_or("the second content view is missing")?;
+    if !replacement.attach_to(&second_parent)
+        || replacement.layer_ptr() != Some(case.layer.as_ptr())
+    {
+        return Err("the replacement view did not get the shared layer");
+    }
+    let original_ptr = original.as_ptr();
+    let weak = NonNull::new(unsafe { appkit_host_view_example_weak_reference(original_ptr) })
+        .ok_or("the weak view reference is missing")?;
+    case.weak_original = Some(weak);
+    replacement.set_notification_handler(Some(Box::new({
+        let displays = case.displays.clone();
+        move |notification| {
+            if notification == HostViewNotification::DisplayLayer {
+                displays.set(displays.get() + 1);
+            }
+        }
+    })));
+
+    let before_replacement = case.displays.get();
+    let initial_display = replacement.display_layer() && case.displays.get() > before_replacement;
+    unsafe { appkit_retain(original_ptr) };
+    case.replacement = Some(replacement);
+    drop(original);
+    case.first_window.close();
+    let before_detach = case.displays.get();
+    let after_detach = case
+        .replacement
+        .as_ref()
+        .is_some_and(HostedView::display_layer)
+        && case.displays.get() > before_detach;
+    let original_alive = unsafe { appkit_host_view_example_weak_reference_is_alive(weak.as_ptr()) };
+    case.detached_display_delivered = initial_display && after_detach && original_alive;
+    unsafe { appkit_release(original_ptr) };
+    Ok(())
+}
+
+extern "C" fn build_shared_layer_case_in_pool(context: *mut c_void) {
+    if let Some(case) = unsafe { context.cast::<SharedLayerCase>().as_mut() } {
+        case.error = build_shared_layer_case(case).err();
+    }
+}
+
+fn verify_shared_layer_delegate() {
+    let main_thread = MainThreadMarker::new().expect("the main thread");
+    let mut case = SharedLayerCase {
+        main_thread,
+        layer: MetalLayer::new(main_thread).expect("a shared metal layer"),
+        first_window: Window::new(
+            main_thread,
+            CGRect::new(0.0, 0.0, 80.0, 60.0),
+            "Hidden original view",
+        )
+        .expect("a hidden window"),
+        second_window: Window::new(
+            main_thread,
+            CGRect::new(0.0, 0.0, 80.0, 60.0),
+            "Hidden replacement view",
+        )
+        .expect("a second hidden window"),
+        replacement: None,
+        weak_original: None,
+        displays: Rc::new(Cell::new(0)),
+        detached_display_delivered: false,
+        error: Some("the pool callback did not run"),
+    };
+    unsafe {
+        appkit_host_view_example_autoreleasepool(
+            build_shared_layer_case_in_pool,
+            (&raw mut case).cast(),
+        );
+    }
+    assert!(case.error.is_none(), "{:?}", case.error);
+    assert!(case.detached_display_delivered);
+    let weak_original = case.weak_original.expect("a weak view reference");
+    assert!(!unsafe { appkit_host_view_example_weak_reference_is_alive(weak_original.as_ptr()) });
+    let after_pool = case.displays.get();
+    assert!(case
+        .replacement
+        .as_ref()
+        .is_some_and(HostedView::display_layer));
+    assert!(case.displays.get() > after_pool);
+    drop(case.replacement.take());
+    case.second_window.close();
+    unsafe { appkit_release(weak_original.as_ptr()) };
+}
+
 fn main() {
     let fixture = Fixture::new();
     fixture.verify_tracking();
     let (key, mouse) = fixture.verify_events();
     fixture.verify_queries(&mouse);
     let cursor = fixture.verify_notifications();
+    fixture.verify_titlebar_drag();
     fixture.verify_reentrant_teardown(key, &mouse, cursor);
+    verify_shared_layer_delegate();
     println!("The hidden hosted view delivered every callback and closed safely.");
 }

@@ -87,9 +87,18 @@ final class HostViewCallbackOwner {
     }
 }
 
+final class HostViewWeakReference {
+    weak var view: HostedView?
+
+    init(_ view: HostedView) {
+        self.view = view
+    }
+}
+
 class HostedView: NSView, CALayerDelegate {
     private let hostedLayer: CAMetalLayer
     private var callbackOwner: HostViewCallbackOwner?
+    fileprivate var ownsTitlebarDrag = false
     fileprivate var trackingOptions: NSTrackingArea.Options = []
     private var hostedTrackingArea: NSTrackingArea?
     var textInputOwner: AnyObject?
@@ -109,7 +118,6 @@ class HostedView: NSView, CALayerDelegate {
     }
 
     deinit {
-        hostedLayer.delegate = nil
         callbackOwner = nil
         textInputOwner = nil
     }
@@ -148,6 +156,11 @@ class HostedView: NSView, CALayerDelegate {
     override func resetCursorRects() {
         super.resetCursorRects()
         notify(.resetCursorRects)
+    }
+
+    @objc(_opaqueRectForWindowMoveWhenInTitlebar)
+    func opaqueRectForWindowMoveWhenInTitlebar() -> NSRect {
+        ownsTitlebarDrag ? bounds : .zero
     }
 
     override var acceptsFirstResponder: Bool {
@@ -272,10 +285,12 @@ class HostedView: NSView, CALayerDelegate {
         let eventBits: UInt64 = 0x7
         let activeBits: UInt64 = 0xf0
         let allowedBits: UInt64 = 0x7f7
+        let visibleRectBit = UInt64(NSTrackingArea.Options.inVisibleRect.rawValue)
         let activity = raw & activeBits
         guard raw == 0 ||
               (raw & ~allowedBits == 0 &&
                raw & eventBits != 0 &&
+               raw & visibleRectBit != 0 &&
                activity.nonzeroBitCount == 1) else {
             return false
         }
@@ -305,7 +320,9 @@ class HostedView: NSView, CALayerDelegate {
     func detach() {
         callbackOwner = nil
         textInputOwner = nil
-        hostedLayer.delegate = nil
+        if hostedLayer.delegate === self {
+            hostedLayer.delegate = nil
+        }
         trackingOptions = []
         _ = installTrackingArea()
         _ = appkit_try { removeFromSuperview() }
@@ -378,6 +395,13 @@ public func appkit_host_view_set_tracking_options(_ handle: UnsafeMutableRawPoin
 public func appkit_host_view_tracking_options(_ handle: UnsafeMutableRawPointer) -> UInt64 {
     let view: HostedView = appkitObject(handle)
     return UInt64(view.trackingOptions.rawValue)
+}
+
+@_cdecl("appkit_host_view_set_owns_titlebar_drag")
+public func appkit_host_view_set_owns_titlebar_drag(_ handle: UnsafeMutableRawPointer, _ owns: Bool) {
+    guard Thread.isMainThread else { return }
+    let view: HostedView = appkitObject(handle)
+    view.ownsTitlebarDrag = owns
 }
 
 @_cdecl("appkit_host_view_invalidate_cursor_rects")
@@ -476,4 +500,40 @@ public func appkit_host_view_accepts_first_responder(_ handle: UnsafeMutableRawP
 @_cdecl("appkit_host_view_example_arrow_cursor")
 public func appkit_host_view_example_arrow_cursor() -> UnsafeMutableRawPointer {
     Unmanaged.passRetained(NSCursor.arrow).toOpaque()
+}
+
+@_cdecl("appkit_host_view_example_titlebar_drag_rect")
+public func appkit_host_view_example_titlebar_drag_rect(
+    _ handle: UnsafeMutableRawPointer,
+    _ out: UnsafeMutablePointer<CGRect>
+) -> Bool {
+    let view: HostedView = appkitObject(handle)
+    guard Thread.isMainThread,
+          view.responds(to: NSSelectorFromString("_opaqueRectForWindowMoveWhenInTitlebar")) else {
+        return false
+    }
+    out.pointee = view.opaqueRectForWindowMoveWhenInTitlebar()
+    return true
+}
+
+@_cdecl("appkit_host_view_example_autoreleasepool")
+public func appkit_host_view_example_autoreleasepool(
+    _ callback: @convention(c) (UnsafeMutableRawPointer?) -> Void,
+    _ context: UnsafeMutableRawPointer?
+) {
+    autoreleasepool {
+        callback(context)
+    }
+}
+
+@_cdecl("appkit_host_view_example_weak_reference")
+public func appkit_host_view_example_weak_reference(_ handle: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer {
+    let view: HostedView = appkitObject(handle)
+    return Unmanaged.passRetained(HostViewWeakReference(view)).toOpaque()
+}
+
+@_cdecl("appkit_host_view_example_weak_reference_is_alive")
+public func appkit_host_view_example_weak_reference_is_alive(_ handle: UnsafeMutableRawPointer) -> Bool {
+    let reference: HostViewWeakReference = appkitObject(handle)
+    return reference.view != nil
 }

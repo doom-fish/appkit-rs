@@ -30,6 +30,7 @@ extern "C" {
     ) -> bool;
     pub(crate) fn appkit_host_view_set_tracking_options(view: *mut c_void, options: u64) -> bool;
     pub(crate) fn appkit_host_view_tracking_options(view: *mut c_void) -> u64;
+    pub(crate) fn appkit_host_view_set_owns_titlebar_drag(view: *mut c_void, owns: bool);
     pub(crate) fn appkit_host_view_invalidate_cursor_rects(view: *mut c_void) -> bool;
     pub(crate) fn appkit_host_view_add_cursor_rect(
         view: *mut c_void,
