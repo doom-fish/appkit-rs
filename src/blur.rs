@@ -70,18 +70,23 @@ impl VisualEffectState {
 #[derive(Debug)]
 pub struct VisualEffectView {
     handle: Handle,
-    window: Window,
 }
 
 impl VisualEffectView {
     #[must_use]
     pub fn new_for_window(_main_thread: MainThreadMarker, window: &Window) -> Option<Self> {
-        let handle =
-            unsafe { Handle::from_retained(native::appkit_blur_new_for_window(window.as_ptr())) }?;
-        Some(Self {
-            handle,
-            window: window.clone(),
-        })
+        let handle = unsafe {
+            Handle::from_retained(native::appkit_blur_new_for_window(window.as_ptr(), false))
+        }?;
+        Some(Self { handle })
+    }
+
+    #[must_use]
+    pub fn new_clear_for_window(_main_thread: MainThreadMarker, window: &Window) -> Option<Self> {
+        let handle = unsafe {
+            Handle::from_retained(native::appkit_blur_new_for_window(window.as_ptr(), true))
+        }?;
+        Some(Self { handle })
     }
 
     #[must_use]
@@ -129,13 +134,12 @@ impl VisualEffectView {
 
     #[must_use]
     pub fn attach_below(&self, hosted_view: &View) -> bool {
-        unsafe {
-            native::appkit_blur_attach_below(
-                self.as_ptr(),
-                self.window.as_ptr(),
-                hosted_view.as_ptr(),
-            )
-        }
+        unsafe { native::appkit_blur_attach_below(self.as_ptr(), hosted_view.as_ptr()) }
+    }
+
+    #[must_use]
+    pub fn is_clear_blur(&self) -> bool {
+        unsafe { native::appkit_blur_is_clear_blur(self.as_ptr()) }
     }
 
     pub fn detach(&self) {
@@ -146,5 +150,33 @@ impl VisualEffectView {
 impl Drop for VisualEffectView {
     fn drop(&mut self) {
         self.detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CString;
+
+    use super::{native, Handle, VisualEffectView};
+
+    #[test]
+    fn visual_effect_handle_does_not_retain_a_window() {
+        assert_eq!(size_of::<VisualEffectView>(), size_of::<Handle>());
+    }
+
+    #[test]
+    fn saturation_filter_detection_preserves_other_filters() {
+        for (description, expected) in [
+            ("colorSaturate", true),
+            ("inputSaturation = 1.2", true),
+            ("GaussianBlur", false),
+            ("colorTint", false),
+        ] {
+            let description = CString::new(description).expect("the text has no null byte");
+            assert_eq!(
+                unsafe { native::appkit_blur_description_is_saturation(description.as_ptr()) },
+                expected
+            );
+        }
     }
 }

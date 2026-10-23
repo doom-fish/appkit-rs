@@ -22,7 +22,8 @@ pub struct SchemeTableV1 {
 extern "C" {
     pub fn appkit_workspace_open_url(url: *const c_char) -> bool;
     pub fn appkit_workspace_open_file(path: *const c_char) -> bool;
-    pub fn appkit_workspace_reveal_paths(paths: *const FileSystemPath, count: usize);
+    pub fn appkit_workspace_valid_file_path(path: *const c_char) -> bool;
+    pub fn appkit_workspace_reveal_paths(paths: *const FileSystemPath, count: usize) -> bool;
     pub fn appkit_workspace_icon_for_file(path: *const c_char) -> *mut c_void;
     pub fn appkit_workspace_icon_for_file_type(file_type: *const c_char) -> *mut c_void;
     pub fn appkit_workspace_icon_for_application(bundle_id: *const c_char) -> *mut c_void;
@@ -31,6 +32,7 @@ extern "C" {
         table: *const PowerTableV1,
     ) -> *mut c_void;
     pub fn appkit_workspace_power_observer_notify(observer: *mut c_void, kind: i32);
+    pub fn appkit_workspace_power_observer_deliver(observer: *mut c_void, kind: i32);
     pub fn appkit_workspace_register_url_scheme(
         scheme: *const c_char,
         token: u64,

@@ -38,15 +38,13 @@ impl AppearanceName {
             Self::DarkAqua => "NSAppearanceNameDarkAqua",
             Self::VibrantLight => "NSAppearanceNameVibrantLight",
             Self::VibrantDark => "NSAppearanceNameVibrantDark",
-            Self::AccessibilityHighContrastAqua => "NSAppearanceNameAccessibilityHighContrastAqua",
-            Self::AccessibilityHighContrastDarkAqua => {
-                "NSAppearanceNameAccessibilityHighContrastDarkAqua"
-            }
+            Self::AccessibilityHighContrastAqua => "NSAppearanceNameAccessibilityAqua",
+            Self::AccessibilityHighContrastDarkAqua => "NSAppearanceNameAccessibilityDarkAqua",
             Self::AccessibilityHighContrastVibrantLight => {
-                "NSAppearanceNameAccessibilityHighContrastVibrantLight"
+                "NSAppearanceNameAccessibilityVibrantLight"
             }
             Self::AccessibilityHighContrastVibrantDark => {
-                "NSAppearanceNameAccessibilityHighContrastVibrantDark"
+                "NSAppearanceNameAccessibilityVibrantDark"
             }
         }
     }
@@ -57,6 +55,13 @@ impl AppearanceName {
             .iter()
             .copied()
             .find(|appearance| appearance.native_name() == name)
+    }
+
+    pub(crate) const fn is_settable(self) -> bool {
+        matches!(
+            self,
+            Self::Aqua | Self::DarkAqua | Self::VibrantLight | Self::VibrantDark
+        )
     }
 
     pub(crate) const fn raw(self) -> i32 {
@@ -78,6 +83,9 @@ pub struct Appearance {
 impl Appearance {
     #[must_use]
     pub fn named(_main_thread: MainThreadMarker, name: AppearanceName) -> Option<Self> {
+        if !name.is_settable() {
+            return None;
+        }
         unsafe { Handle::from_retained(native::appkit_appearance_named(name.raw())) }
             .map(|handle| Self { handle })
     }
@@ -122,12 +130,44 @@ impl Appearance {
             .map(|handle| Self { handle })
     }
 
-    pub fn set_view_override(view: &View, appearance: Option<AppearanceName>) {
-        unsafe {
-            native::appkit_appearance_set_view_override(
-                view.as_ptr(),
-                appearance.map_or(-1, AppearanceName::raw),
-            );
+    pub fn set_view_override(view: &View, appearance: Option<AppearanceName>) -> bool {
+        appearance.is_none_or(AppearanceName::is_settable)
+            && unsafe {
+                native::appkit_appearance_set_view_override(
+                    view.as_ptr(),
+                    appearance.map_or(-1, AppearanceName::raw),
+                )
+            }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{native, AppearanceName, NAMES};
+    use crate::util::take_string;
+
+    #[test]
+    fn appearance_names_match_the_sdk() {
+        for name in NAMES {
+            let raw = unsafe { take_string(native::appkit_appearance_name_raw_value(name.raw())) }
+                .expect("the SDK has an appearance name");
+            assert_eq!(name.native_name(), raw);
+            assert_eq!(AppearanceName::from_native_name(&raw), Some(name));
+        }
+        assert_eq!(
+            AppearanceName::from_native_name("NSAppearanceNameAccessibilityHighContrastAqua"),
+            None
+        );
+    }
+
+    #[test]
+    fn match_only_appearances_cannot_be_set() {
+        for name in &NAMES[..4] {
+            assert!(name.is_settable());
+        }
+        for name in &NAMES[4..] {
+            assert!(!name.is_settable());
+            assert!(unsafe { native::appkit_appearance_named(name.raw()) }.is_null());
         }
     }
 }

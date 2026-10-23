@@ -1,6 +1,6 @@
 use core::cell::{Cell, RefCell};
 use core::ffi::c_void;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::fmt;
 use std::os::unix::ffi::OsStrExt;
@@ -125,11 +125,17 @@ type SchemeCompletion = Box<dyn FnMut(Result<(), String>)>;
 
 struct SchemeState {
     completion: HandlerSlot<SchemeCompletion>,
+    completed: Cell<bool>,
 }
 
-#[must_use = "the registration must remain alive until the completion callback"]
+thread_local! {
+    static PENDING_SCHEMES: RefCell<HashMap<RegistrationToken, Rc<CallbackRegistration<SchemeState>>>> =
+        RefCell::new(HashMap::new());
+}
+
+#[must_use = "retain this handle to cancel the completion explicitly"]
 pub struct SchemeRegistration {
-    registration: CallbackRegistration<SchemeState>,
+    registration: Rc<CallbackRegistration<SchemeState>>,
     handle: Handle,
 }
 
@@ -138,12 +144,20 @@ impl SchemeRegistration {
     pub const fn as_ptr(&self) -> *mut c_void {
         self.handle.as_ptr()
     }
+
+    #[must_use]
+    pub fn cancel_completion(&self) -> bool {
+        !self.registration.state().completed.get()
+            && cancel_scheme_registration(self.registration.token())
+    }
 }
 
-impl Drop for SchemeRegistration {
-    fn drop(&mut self) {
-        let _ = self.registration.deactivate();
-    }
+fn cancel_scheme_registration(token: RegistrationToken) -> bool {
+    let registration = PENDING_SCHEMES.with(|pending| pending.borrow_mut().remove(&token));
+    registration.is_some_and(|registration| {
+        let _ = registration.deactivate();
+        true
+    })
 }
 
 extern "C" fn power_event(raw_token: u64, kind: i32) {
@@ -174,9 +188,6 @@ extern "C" fn scheme_complete(raw_token: u64, success: bool, bytes: *const u8, l
         let Some(token) = RegistrationToken::from_raw(raw_token) else {
             return;
         };
-        let Some(state) = CallbackRegistration::<SchemeState>::snapshot(token, main_thread) else {
-            return;
-        };
         let result = if success {
             Ok(())
         } else {
@@ -184,17 +195,35 @@ extern "C" fn scheme_complete(raw_token: u64, success: bool, bytes: *const u8, l
                 .filter(|message| !message.is_empty())
                 .unwrap_or_else(|| "the URL scheme registration failed".to_owned()))
         };
-        let _ = state
-            .completion
-            .invoke("AppKit workspace scheme completion", |completion| {
-                completion(result);
-            });
+        finish_scheme_registration(token, main_thread, result);
     });
 }
 
+fn finish_scheme_registration(
+    token: RegistrationToken,
+    main_thread: MainThreadMarker,
+    result: Result<(), String>,
+) {
+    let Some(state) = CallbackRegistration::<SchemeState>::snapshot(token, main_thread) else {
+        return;
+    };
+    if state.completed.replace(true) {
+        return;
+    }
+    let _ = state
+        .completion
+        .invoke("AppKit workspace scheme completion", |completion| {
+            completion(result);
+        });
+    let _ = cancel_scheme_registration(token);
+}
+
 fn file_system_path(path: &Path) -> Result<CString, AppKitError> {
-    CString::new(path.as_os_str().as_bytes())
-        .map_err(|error| AppKitError::InvalidArgument(error.to_string()))
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() {
+        return Err(AppKitError::InvalidArgument("the path is empty".to_owned()));
+    }
+    CString::new(bytes).map_err(|error| AppKitError::InvalidArgument(error.to_string()))
 }
 
 impl Workspace {
@@ -208,10 +237,7 @@ impl Workspace {
         Ok(unsafe { native::appkit_workspace_open_file(path.as_ptr()) })
     }
 
-    pub fn reveal_paths(
-        _main_thread: MainThreadMarker,
-        paths: &[&Path],
-    ) -> Result<(), AppKitError> {
+    pub fn reveal_paths(paths: &[&Path]) -> Result<(), AppKitError> {
         let strings = paths
             .iter()
             .map(|path| file_system_path(path))
@@ -222,10 +248,16 @@ impl Workspace {
                 bytes: path.as_ptr(),
             })
             .collect::<Vec<_>>();
-        if !borrowed.is_empty() {
-            unsafe { native::appkit_workspace_reveal_paths(borrowed.as_ptr(), borrowed.len()) };
+        if borrowed.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        if unsafe { native::appkit_workspace_reveal_paths(borrowed.as_ptr(), borrowed.len()) } {
+            Ok(())
+        } else {
+            Err(AppKitError::InvalidArgument(
+                "the workspace cannot reveal the paths".to_owned(),
+            ))
+        }
     }
 
     pub fn icon_for_file(
@@ -315,13 +347,18 @@ impl Workspace {
         let mut completion = Some(completion);
         let state = Rc::new(SchemeState {
             completion: HandlerSlot::new(),
+            completed: Cell::new(false),
         });
         state.completion.replace(Some(Box::new(move |result| {
             if let Some(completion) = completion.take() {
                 completion(result);
             }
         })));
-        let registration = CallbackRegistration::new(main_thread, state);
+        let registration = Rc::new(CallbackRegistration::new(main_thread, state));
+        let token = registration.token();
+        PENDING_SCHEMES.with(|pending| {
+            pending.borrow_mut().insert(token, Rc::clone(&registration));
+        });
         let table = native::SchemeTableV1 {
             header: CallbackTableHeader {
                 version: 1,
@@ -333,12 +370,15 @@ impl Workspace {
         let handle = unsafe {
             native::appkit_workspace_register_url_scheme(
                 scheme.as_ptr(),
-                registration.token().get(),
+                token.get(),
                 &raw const table,
                 &raw mut status,
             )
         };
         let handle = unsafe { Handle::from_retained(handle) };
+        if handle.is_none() || status != 0 {
+            let _ = cancel_scheme_registration(token);
+        }
         match (handle, status) {
             (Some(handle), 0) => Ok(SchemeRegistration {
                 registration,
@@ -379,5 +419,92 @@ impl Workspace {
     #[must_use]
     pub fn is_voice_over_enabled() -> bool {
         unsafe { ffi::appkit_workspace_is_voice_over_enabled() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    use std::rc::Rc;
+
+    use super::{
+        cancel_scheme_registration, file_system_path, finish_scheme_registration, native,
+        CallbackRegistration, HandlerSlot, MainThreadMarker, SchemeState, Workspace,
+        PENDING_SCHEMES,
+    };
+
+    #[test]
+    fn file_paths_keep_their_bytes_and_reject_empty_input() {
+        assert!(file_system_path(Path::new("")).is_err());
+        assert!(file_system_path(Path::new("abc\0def")).is_err());
+        let original = Path::new("Café/data");
+        let encoded = file_system_path(original).expect("a nonempty path");
+        assert_eq!(encoded.as_bytes(), original.as_os_str().as_bytes());
+
+        let empty = CString::new("").expect("an empty C string");
+        assert!(!unsafe { native::appkit_workspace_valid_file_path(empty.as_ptr()) });
+        assert!(unsafe { native::appkit_workspace_valid_file_path(encoded.as_ptr()) });
+
+        let result = std::thread::spawn(|| Workspace::reveal_paths(&[Path::new("")]))
+            .join()
+            .expect("the background check completes");
+        assert!(result.is_err());
+        assert!(Workspace::reveal_paths(&[]).is_ok());
+    }
+
+    #[test]
+    fn scheme_callback_survives_a_dropped_caller() {
+        let main_thread = unsafe { MainThreadMarker::new_unchecked() };
+        let delivered = Rc::new(RefCell::new(Vec::new()));
+        let events = Rc::clone(&delivered);
+        let state = Rc::new(SchemeState {
+            completion: HandlerSlot::new(),
+            completed: Cell::new(false),
+        });
+        state.completion.replace(Some(Box::new(move |result| {
+            events.borrow_mut().push(result);
+        })));
+        let registration = Rc::new(CallbackRegistration::new(main_thread, state));
+        let token = registration.token();
+        PENDING_SCHEMES.with(|pending| {
+            pending.borrow_mut().insert(token, Rc::clone(&registration));
+        });
+        drop(registration);
+
+        assert!(CallbackRegistration::<SchemeState>::snapshot(token, main_thread).is_some());
+        finish_scheme_registration(token, main_thread, Ok(()));
+        assert_eq!(delivered.borrow().as_slice(), &[Ok(())]);
+        assert!(CallbackRegistration::<SchemeState>::snapshot(token, main_thread).is_none());
+
+        finish_scheme_registration(token, main_thread, Err("late".to_owned()));
+        assert_eq!(delivered.borrow().len(), 1);
+    }
+
+    #[test]
+    fn an_explicit_scheme_cancel_prevents_completion() {
+        let main_thread = unsafe { MainThreadMarker::new_unchecked() };
+        let delivered = Rc::new(Cell::new(false));
+        let called = Rc::clone(&delivered);
+        let state = Rc::new(SchemeState {
+            completion: HandlerSlot::new(),
+            completed: Cell::new(false),
+        });
+        state
+            .completion
+            .replace(Some(Box::new(move |_| called.set(true))));
+        let registration = Rc::new(CallbackRegistration::new(main_thread, state));
+        let token = registration.token();
+        PENDING_SCHEMES.with(|pending| {
+            pending.borrow_mut().insert(token, Rc::clone(&registration));
+        });
+        drop(registration);
+
+        assert!(cancel_scheme_registration(token));
+        assert!(!cancel_scheme_registration(token));
+        finish_scheme_registration(token, main_thread, Ok(()));
+        assert!(!delivered.get());
     }
 }

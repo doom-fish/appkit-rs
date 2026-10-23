@@ -1,4 +1,5 @@
 import AppKit
+import AppKitExceptionShim
 
 let appkitAppearanceNames: [NSAppearance.Name] = [
     .aqua,
@@ -12,16 +13,27 @@ let appkitAppearanceNames: [NSAppearance.Name] = [
 ]
 
 func appkitAppearance(_ index: Int32) -> NSAppearance? {
-    guard index >= 0, Int(index) < appkitAppearanceNames.count else { return nil }
-    return NSAppearance(named: appkitAppearanceNames[Int(index)])
+    guard index >= 0, index < 4 else { return nil }
+    var appearance: NSAppearance?
+    guard appkit_try({
+        appearance = NSAppearance(named: appkitAppearanceNames[Int(index)])
+    }) == nil else { return nil }
+    return appearance
 }
 
 func appkitAppearanceIndex(_ appearance: NSAppearance?) -> Int32 {
     guard let appearance,
-          let index = appkitAppearanceNames.firstIndex(of: appearance.name) else {
+          let name = appearance.bestMatch(from: appkitAppearanceNames),
+          let index = appkitAppearanceNames.firstIndex(of: name) else {
         return -1
     }
     return Int32(index)
+}
+
+@_cdecl("appkit_appearance_name_raw_value")
+public func appkit_appearance_name_raw_value(_ name: Int32) -> UnsafeMutablePointer<CChar>? {
+    guard name >= 0, Int(name) < appkitAppearanceNames.count else { return nil }
+    return strdup(appkitAppearanceNames[Int(name)].rawValue)
 }
 
 @_cdecl("appkit_appearance_named")
@@ -62,7 +74,16 @@ public func appkit_appearance_view_override(
 @_cdecl("appkit_appearance_set_view_override")
 public func appkit_appearance_set_view_override(
     _ handle: UnsafeMutableRawPointer, _ appearance: Int32
-) {
+) -> Bool {
     let view: NSView = appkitObject(handle)
-    view.appearance = appkitAppearance(appearance)
+    let override: NSAppearance?
+    if appearance == -1 {
+        override = nil
+    } else {
+        guard let named = appkitAppearance(appearance) else { return false }
+        override = named
+    }
+    return appkit_try {
+        view.appearance = override
+    } == nil
 }

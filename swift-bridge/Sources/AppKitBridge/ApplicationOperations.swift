@@ -1,4 +1,5 @@
 import AppKit
+import AppKitExceptionShim
 
 @_cdecl("appkit_application_key_window")
 public func appkit_application_key_window(_ handle: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? {
@@ -83,12 +84,51 @@ public func appkit_application_presentation_options(_ handle: UnsafeMutableRawPo
     return UInt64(application.presentationOptions.rawValue)
 }
 
+private func appkitValidPresentationOptions(_ options: NSApplication.PresentationOptions) -> Bool {
+    let dockIsHidden = options.contains(.hideDock)
+    let dockAutoHides = options.contains(.autoHideDock)
+    let menuIsHidden = options.contains(.hideMenuBar)
+    let menuAutoHides = options.contains(.autoHideMenuBar)
+    if dockIsHidden && dockAutoHides || menuIsHidden && menuAutoHides {
+        return false
+    }
+    if menuIsHidden && !dockIsHidden {
+        return false
+    }
+    if menuAutoHides && !(dockIsHidden || dockAutoHides) {
+        return false
+    }
+    let requiresDock: NSApplication.PresentationOptions = [
+        .disableProcessSwitching,
+        .disableForceQuit,
+        .disableSessionTermination,
+        .disableMenuBarTransparency,
+    ]
+    if !options.intersection(requiresDock).isEmpty && !(dockIsHidden || dockAutoHides) {
+        return false
+    }
+    if options.contains(.autoHideToolbar)
+        && !(options.contains(.fullScreen) && menuAutoHides) {
+        return false
+    }
+    return true
+}
+
+@_cdecl("appkit_application_validate_presentation_options")
+public func appkit_application_validate_presentation_options(_ raw: UInt64) -> Bool {
+    appkitValidPresentationOptions(NSApplication.PresentationOptions(rawValue: UInt(raw)))
+}
+
 @_cdecl("appkit_application_set_presentation_options")
 public func appkit_application_set_presentation_options(
     _ handle: UnsafeMutableRawPointer, _ options: UInt64
-) {
+) -> Bool {
+    let requested = NSApplication.PresentationOptions(rawValue: UInt(options))
+    guard appkitValidPresentationOptions(requested) else { return false }
     let application: NSApplication = appkitObject(handle)
-    application.presentationOptions = NSApplication.PresentationOptions(rawValue: UInt(options))
+    return appkit_try {
+        application.presentationOptions = requested
+    } == nil
 }
 
 @_cdecl("appkit_application_request_user_attention")
@@ -120,9 +160,18 @@ public func appkit_application_effective_appearance(_ handle: UnsafeMutableRawPo
 }
 
 @_cdecl("appkit_application_set_appearance")
-public func appkit_application_set_appearance(_ handle: UnsafeMutableRawPointer, _ appearance: Int32) {
+public func appkit_application_set_appearance(_ handle: UnsafeMutableRawPointer, _ appearance: Int32) -> Bool {
     let application: NSApplication = appkitObject(handle)
-    application.appearance = appkitAppearance(appearance)
+    let override: NSAppearance?
+    if appearance == -1 {
+        override = nil
+    } else {
+        guard let named = appkitAppearance(appearance) else { return false }
+        override = named
+    }
+    return appkit_try {
+        application.appearance = override
+    } == nil
 }
 
 @_cdecl("appkit_application_order_front_character_palette")
@@ -138,12 +187,13 @@ public func appkit_application_order_front_character_palette(
 public func appkit_application_change_windows_item(
     _ handle: UnsafeMutableRawPointer,
     _ window: UnsafeMutableRawPointer,
-    _ title: UnsafePointer<CChar>,
-    _ isFilename: Bool
-) {
+    _ title: UnsafePointer<CChar>
+) -> Bool {
     let application: NSApplication = appkitObject(handle)
     let window: NSWindow = appkitObject(window)
-    application.changeWindowsItem(window, title: String(cString: title), filename: isFilename)
+    return appkit_try {
+        application.changeWindowsItem(window, title: String(cString: title), filename: false)
+    } == nil
 }
 
 @_cdecl("appkit_application_current_event")

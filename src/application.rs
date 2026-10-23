@@ -44,7 +44,18 @@ pub struct PresentationOptions(u64);
 impl PresentationOptions {
     pub const NONE: Self = Self(0);
     pub const AUTO_HIDE_DOCK: Self = Self(1);
+    pub const HIDE_DOCK: Self = Self(1 << 1);
     pub const AUTO_HIDE_MENU_BAR: Self = Self(1 << 2);
+    pub const HIDE_MENU_BAR: Self = Self(1 << 3);
+    pub const DISABLE_APPLE_MENU: Self = Self(1 << 4);
+    pub const DISABLE_PROCESS_SWITCHING: Self = Self(1 << 5);
+    pub const DISABLE_FORCE_QUIT: Self = Self(1 << 6);
+    pub const DISABLE_SESSION_TERMINATION: Self = Self(1 << 7);
+    pub const DISABLE_HIDE_APPLICATION: Self = Self(1 << 8);
+    pub const DISABLE_MENU_BAR_TRANSPARENCY: Self = Self(1 << 9);
+    pub const FULL_SCREEN: Self = Self(1 << 10);
+    pub const AUTO_HIDE_TOOLBAR: Self = Self(1 << 11);
+    pub const DISABLE_CURSOR_LOCATION_ASSISTANCE: Self = Self(1 << 12);
 
     #[must_use]
     pub const fn from_bits_retain(bits: u64) -> Self {
@@ -54,6 +65,37 @@ impl PresentationOptions {
     #[must_use]
     pub const fn bits(self) -> u64 {
         self.0
+    }
+
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        let dock = self.0 & (Self::AUTO_HIDE_DOCK.0 | Self::HIDE_DOCK.0);
+        let menu = self.0 & (Self::AUTO_HIDE_MENU_BAR.0 | Self::HIDE_MENU_BAR.0);
+        let requires_dock = Self::DISABLE_PROCESS_SWITCHING.0
+            | Self::DISABLE_FORCE_QUIT.0
+            | Self::DISABLE_SESSION_TERMINATION.0
+            | Self::DISABLE_MENU_BAR_TRANSPARENCY.0;
+        if dock == Self::AUTO_HIDE_DOCK.0 | Self::HIDE_DOCK.0
+            || menu == Self::AUTO_HIDE_MENU_BAR.0 | Self::HIDE_MENU_BAR.0
+        {
+            return false;
+        }
+        if self.0 & Self::HIDE_MENU_BAR.0 != 0 && dock != Self::HIDE_DOCK.0 {
+            return false;
+        }
+        if self.0 & Self::AUTO_HIDE_MENU_BAR.0 != 0 && dock == 0 {
+            return false;
+        }
+        if self.0 & requires_dock != 0 && dock == 0 {
+            return false;
+        }
+        if self.0 & Self::AUTO_HIDE_TOOLBAR.0 != 0
+            && self.0 & (Self::FULL_SCREEN.0 | Self::AUTO_HIDE_MENU_BAR.0)
+                != Self::FULL_SCREEN.0 | Self::AUTO_HIDE_MENU_BAR.0
+        {
+            return false;
+        }
+        true
     }
 }
 
@@ -186,10 +228,12 @@ impl Application {
         })
     }
 
-    pub fn set_presentation_options(&self, options: PresentationOptions) {
-        unsafe {
-            native::appkit_application_set_presentation_options(self.as_ptr(), options.bits());
-        };
+    #[must_use]
+    pub fn set_presentation_options(&self, options: PresentationOptions) -> bool {
+        options.is_valid()
+            && unsafe {
+                native::appkit_application_set_presentation_options(self.as_ptr(), options.bits())
+            }
     }
 
     #[must_use]
@@ -217,13 +261,14 @@ impl Application {
         })
     }
 
-    pub fn set_appearance(&self, appearance: Option<AppearanceName>) {
-        unsafe {
-            native::appkit_application_set_appearance(
-                self.as_ptr(),
-                appearance.map_or(-1, AppearanceName::raw),
-            );
-        };
+    pub fn set_appearance(&self, appearance: Option<AppearanceName>) -> bool {
+        appearance.is_none_or(AppearanceName::is_settable)
+            && unsafe {
+                native::appkit_application_set_appearance(
+                    self.as_ptr(),
+                    appearance.map_or(-1, AppearanceName::raw),
+                )
+            }
     }
 
     pub fn order_front_character_palette(&self, sender: Option<&Window>) {
@@ -231,22 +276,15 @@ impl Application {
         unsafe { native::appkit_application_order_front_character_palette(self.as_ptr(), sender) };
     }
 
-    pub fn change_windows_item(
-        &self,
-        window: &Window,
-        title: &str,
-        is_filename: bool,
-    ) -> Result<(), AppKitError> {
+    pub fn change_windows_item(&self, window: &Window, title: &str) -> Result<bool, AppKitError> {
         let title = c_string(title)?;
-        unsafe {
+        Ok(unsafe {
             native::appkit_application_change_windows_item(
                 self.as_ptr(),
                 window.as_ptr(),
                 title.as_ptr(),
-                is_filename,
-            );
-        }
-        Ok(())
+            )
+        })
     }
 
     #[must_use]
@@ -278,4 +316,60 @@ impl Application {
 
 fn pointer(value: Option<&CString>) -> *const c_char {
     value.map_or(core::ptr::null(), |value| value.as_ptr())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppKitError, Application, PresentationOptions, Window};
+    use crate::ffi::application as native;
+
+    #[test]
+    fn presentation_options_follow_appkit_rules() {
+        let valid = [
+            PresentationOptions::NONE,
+            PresentationOptions::AUTO_HIDE_DOCK,
+            PresentationOptions::AUTO_HIDE_DOCK | PresentationOptions::AUTO_HIDE_MENU_BAR,
+            PresentationOptions::HIDE_DOCK | PresentationOptions::HIDE_MENU_BAR,
+            PresentationOptions::HIDE_DOCK | PresentationOptions::DISABLE_PROCESS_SWITCHING,
+            PresentationOptions::FULL_SCREEN
+                | PresentationOptions::AUTO_HIDE_DOCK
+                | PresentationOptions::AUTO_HIDE_MENU_BAR
+                | PresentationOptions::AUTO_HIDE_TOOLBAR,
+        ];
+        let invalid = [
+            PresentationOptions::AUTO_HIDE_DOCK | PresentationOptions::HIDE_DOCK,
+            PresentationOptions::HIDE_DOCK
+                | PresentationOptions::AUTO_HIDE_MENU_BAR
+                | PresentationOptions::HIDE_MENU_BAR,
+            PresentationOptions::HIDE_MENU_BAR,
+            PresentationOptions::AUTO_HIDE_DOCK | PresentationOptions::HIDE_MENU_BAR,
+            PresentationOptions::AUTO_HIDE_MENU_BAR,
+            PresentationOptions::DISABLE_PROCESS_SWITCHING,
+            PresentationOptions::DISABLE_FORCE_QUIT,
+            PresentationOptions::DISABLE_SESSION_TERMINATION,
+            PresentationOptions::DISABLE_MENU_BAR_TRANSPARENCY,
+            PresentationOptions::AUTO_HIDE_TOOLBAR,
+            PresentationOptions::FULL_SCREEN | PresentationOptions::AUTO_HIDE_TOOLBAR,
+        ];
+        for options in valid {
+            assert!(options.is_valid(), "{options:?}");
+        }
+        for options in invalid {
+            assert!(!options.is_valid(), "{options:?}");
+        }
+        for bits in 0..1 << 13 {
+            let options = PresentationOptions::from_bits_retain(bits);
+            assert_eq!(
+                options.is_valid(),
+                unsafe { native::appkit_application_validate_presentation_options(bits) },
+                "{options:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn window_menu_titles_have_no_filename_flag() {
+        let _: fn(&Application, &Window, &str) -> Result<bool, AppKitError> =
+            Application::change_windows_item;
+    }
 }
