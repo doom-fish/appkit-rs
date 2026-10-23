@@ -708,6 +708,42 @@ fn verify_offscreen_titlebar_drag() {
     unsafe { appkit_release(raw.as_ptr()) };
 }
 
+fn verify_deactivated_callbacks() {
+    let main_thread = MainThreadMarker::new().expect("the main thread");
+    let layer = MetalLayer::new(main_thread).expect("a metal layer");
+    let view = unsafe {
+        HostedView::new(
+            main_thread,
+            CGRect::new(0.0, 0.0, 40.0, 30.0),
+            layer.as_ptr(),
+        )
+    }
+    .expect("a hosted view");
+    let calls = Rc::new(Cell::new(0));
+    view.set_event_handler(Some(Box::new({
+        let calls = calls.clone();
+        move |_, _| {
+            calls.set(calls.get() + 1);
+            true
+        }
+    })));
+    let event = Event::synthetic_mouse(
+        main_thread,
+        EventType::MouseMoved,
+        CGPoint::new(4.0, 4.0),
+        ModifierFlags::default(),
+        0,
+        0.0,
+    )
+    .expect("a mouse event");
+    view.send_event(HostViewEvent::MouseMoved, event.as_ref());
+    assert_eq!(calls.get(), 1);
+    view.deactivate_callbacks();
+    view.deactivate_callbacks();
+    view.send_event(HostViewEvent::MouseMoved, event.as_ref());
+    assert_eq!(calls.get(), 1);
+}
+
 fn main() {
     let fixture = Fixture::new();
     fixture.verify_tracking();
@@ -718,5 +754,6 @@ fn main() {
     fixture.verify_reentrant_teardown(key, &mouse, cursor);
     verify_shared_layer_delegate();
     verify_offscreen_titlebar_drag();
+    verify_deactivated_callbacks();
     println!("Hosted views delivered callbacks, updated titlebar regions, and closed safely.");
 }

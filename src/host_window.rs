@@ -419,6 +419,12 @@ impl HostedWindow {
     }
 }
 
+impl HostedWindow {
+    pub fn deactivate_callbacks(&self) {
+        let _ = self.registration.deactivate();
+    }
+}
+
 impl Drop for HostedWindow {
     fn drop(&mut self) {
         let _ = self.registration.deactivate();
