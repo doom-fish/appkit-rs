@@ -8,6 +8,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ### Added
 
+- `Workspace` opens URLs and files, reveals paths in Finder from any thread, reads file and application icons, observes sleep and wake, and registers the app for a URL scheme. A dropped registration handle still delivers its completion.
+- `Application` reads and changes key, main and ordered windows, activation, visibility, presentation options, user attention and the app appearance. Invalid presentation options give an error.
+- `Appearance` converts appearance names, including the four accessibility names that only match, and sets or clears view overrides.
+- `VisualEffectView` attaches a standard or a clear blur below a hosted view without a strong reference to its window.
 - `ApplicationHost` installs an application delegate on the shared `NSApplication`. It forwards launch, reopen, quit, URL, Dock menu, screen and menu-item events through token callbacks. Reopen defaults to YES, and a quit request from inside a callback gets an answer at once.
 - `HostedWindow` makes `NSWindow` and `NSPanel` subclasses with a retained delegate and token callbacks for close, focus, movement, size, screen, occlusion, full-screen, tab and titlebar events. A window that closes and shows again keeps its callbacks.
 - `Screen::maximum_frames_per_second` reads the highest refresh rate of a screen, for example 120 on a ProMotion display.
