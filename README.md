@@ -1,0 +1,77 @@
+# appkit-rs
+
+Safe Rust bindings for Apple's [AppKit](https://developer.apple.com/documentation/appkit) framework on macOS. This release gives access to windows and views that other code makes, to screens, to the shared application, to images, and to the accessibility settings of the display.
+
+The crate requires macOS 11 or later.
+
+## Quick start
+
+```rust,no_run
+use appkit::prelude::*;
+
+fn main() {
+    let main_thread = MainThreadMarker::new().expect("main thread");
+    if Workspace::accessibility_display_should_reduce_motion() {
+        println!("the user prefers less motion");
+    }
+    for screen in Screen::screens(main_thread) {
+        println!("{}: {:?}", screen.localized_name(), screen.display_id());
+    }
+    let application = Application::shared(main_thread);
+    application
+        .order_front_standard_about_panel(&AboutPanelOptions {
+            application_name: Some("Example".to_owned()),
+            ..AboutPanelOptions::default()
+        })
+        .unwrap();
+}
+```
+
+## The main thread
+
+`AppKit` objects belong to the main thread.
+
+- `MainThreadMarker::new` gives a marker only on the main thread. The functions that make or find `View`, `Window`, `Screen` and `Application` values need a marker.
+- These values are not `Send` and not `Sync`. Thus they stay on the main thread.
+- `Image` and `Workspace` do not need a marker.
+
+## Windows and views from other code
+
+A window library, for example one that gives a `raw-window-handle`, can supply an `NSView` pointer. `View::from_raw_borrowed` retains this view. Then `View::window` gives its window.
+
+```rust,no_run
+use core::ffi::c_void;
+use core::ptr::NonNull;
+
+use appkit::prelude::*;
+
+fn style(ns_view: NonNull<c_void>) {
+    let main_thread = MainThreadMarker::new().expect("main thread");
+    let view = unsafe { View::from_raw_borrowed(ns_view, main_thread) };
+    let Some(window) = view.window() else { return };
+    window.set_appearance(Some(AppearanceName::DarkAqua));
+    window.set_titlebar_separator_style(TitlebarSeparatorStyle::Line);
+    let chrome = window.frame().size.height - window.content_layout_rect().size.height;
+    println!("title bar height: {chrome}");
+}
+```
+
+- `View::from_raw_borrowed` and `Window::from_raw_borrowed` are `unsafe`. The pointer must point to a live `NSView` or `NSWindow`.
+- `View::layer_ptr` gives the `CALayer` of the view, or `None`. The pointer is not retained. It stays valid while the view keeps this layer.
+- `Window::animate_alpha_value` changes the alpha value through the animator of the window.
+- Geometry values are `CGRect`, `CGSize` and `CGPoint` from `apple-cf`. This crate exports these types again.
+
+## Raw functions
+
+The `ffi` module declares the functions of the Swift bridge. An object pointer that a bridge function returns has a retain count that the caller owns, except the pointer from `appkit_view_layer`. Use `ffi::appkit_release` to release an object. Use `ffi::appkit_string_free` to release a string.
+
+## Examples
+
+```bash
+cargo run --example 01_accessibility
+cargo run --example 02_screens
+```
+
+## License
+
+MIT OR Apache-2.0

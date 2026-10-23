@@ -1,0 +1,61 @@
+[package]
+name = "appkit-rs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/doom-fish/appkit-rs"
+repository = "https://github.com/doom-fish/appkit-rs"
+description = "Safe Rust bindings for Apple's AppKit framework on macOS: windows, views, screens, the application and accessibility settings"
+authors = ["Per Johansson <per@doom.fish>"]
+keywords = ["appkit", "nswindow", "cocoa", "macos", "apple"]
+categories = ["api-bindings", "os::macos-apis", "gui"]
+rust-version = "1.82"
+readme = "README.md"
+build = "build.rs"
+include = [
+    "src/**/*",
+    "examples/**/*",
+    "swift-bridge/Package.swift",
+    "swift-bridge/Sources/**/*",
+    "build.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-*",
+    "CHANGELOG.md",
+    "COVERAGE.md",
+]
+
+[lints.rust]
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+missing_safety_doc = "allow"
+
+[lib]
+name = "appkit"
+crate-type = ["lib"]
+
+[dependencies]
+apple-cf = { path = "../apple-cf-rs", version = ">=0.11, <0.12", default-features = false, features = ["cg"] }
+
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[[example]]
+name = "01_accessibility"
+
+[[example]]
+name = "02_screens"
+
+[profile.release]
+debug = "full"
+strip = "none"
