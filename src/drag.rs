@@ -316,6 +316,7 @@ pub struct DragRegistration {
     registration: CallbackRegistration<DragState>,
     window: Window,
     view: View,
+    detached: Cell<bool>,
     _main_thread: MainThreadMarker,
 }
 
@@ -353,6 +354,7 @@ impl DragRegistration {
             registration,
             window,
             view,
+            detached: Cell::new(false),
             _main_thread: main_thread,
         })
     }
@@ -363,7 +365,11 @@ impl DragRegistration {
 
     pub fn deactivate_callbacks(&self) {
         let _ = self.registration.deactivate();
-        unsafe { ffi::appkit_drag_detach(self.window.as_ptr()) };
+        if !self.detached.replace(true) {
+            unsafe {
+                ffi::appkit_drag_detach(self.window.as_ptr(), self.registration.token().get());
+            }
+        }
     }
 
     #[must_use]

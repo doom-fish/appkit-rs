@@ -43,7 +43,7 @@ extern "C" {
         token: u64,
         table: *const DragCallbackTableV1,
     ) -> bool;
-    pub(crate) fn appkit_drag_detach(window: *mut c_void);
+    pub(crate) fn appkit_drag_detach(window: *mut c_void, token: u64);
     pub(crate) fn appkit_drag_start(
         window: *mut c_void,
         view: *mut c_void,

@@ -17,6 +17,7 @@ use appkit::pasteboard::{Pasteboard, TYPE_FILE_URL};
 use appkit::{CGPoint, CGRect, Event, MainThreadMarker};
 
 extern "C" {
+    fn appkit_drag_detach(window: *mut c_void, token: u64);
     fn appkit_drag_verify_destination(
         window: *mut c_void,
         pasteboard: *mut c_void,
@@ -543,6 +544,103 @@ fn exercise_drop_inside_handler(main_thread: MainThreadMarker) {
     assert_eq!(calls.get(), 1);
 }
 
+fn exercise_re_registration(main_thread: MainThreadMarker) {
+    let (host, first_view) = hidden_host(main_thread, false);
+    let board = Pasteboard::unique(main_thread).expect("a unique pasteboard");
+    let path = PathBuf::from("/example/replacement.txt");
+    assert!(board
+        .set_filenames(std::slice::from_ref(&path))
+        .expect("a valid path"));
+    let mut drag =
+        Some(DragRegistration::new(main_thread, &host, &first_view).expect("a drag host"));
+    let old_calls = Rc::new(Cell::new(0));
+    let observed = Rc::clone(&old_calls);
+    drag.as_ref()
+        .expect("the old drag")
+        .set_handler(Some(Box::new(move |event| {
+            observed.set(observed.get() + 1);
+            response(&event, true)
+        })));
+    let position = CGPoint::new(17.0, 23.0);
+    let source = (DragOperation::COPY, false);
+    expect_destination(
+        drag.as_ref().expect("the old drag"),
+        &board,
+        position,
+        source,
+        DragSelector::Entered,
+        1,
+    );
+    assert_eq!(old_calls.get(), 1);
+
+    drag.as_ref().expect("the old drag").deactivate_callbacks();
+    let layer = MetalLayer::new(main_thread).expect("a second metal layer");
+    let next_view = unsafe {
+        HostedView::new(
+            main_thread,
+            CGRect::new(0.0, 0.0, 200.0, 140.0),
+            layer.as_ptr(),
+        )
+    }
+    .expect("a second hosted view");
+    let native = host.as_window();
+    assert!(next_view.attach_to(&native.content_view().expect("a content view")));
+    let next_drag = DragRegistration::new(main_thread, &host, &next_view).expect("a new drag host");
+    let next_calls = Rc::new(Cell::new(0));
+    let observed = Rc::clone(&next_calls);
+    next_drag.set_handler(Some(Box::new(move |event| {
+        observed.set(observed.get() + 1);
+        response(&event, true)
+    })));
+    drag = Some(next_drag);
+
+    unsafe { appkit_drag_detach(native.as_ptr(), u64::MAX) };
+    expect_destination(
+        drag.as_ref().expect("the new drag"),
+        &board,
+        position,
+        source,
+        DragSelector::Entered,
+        1,
+    );
+    expect_destination(
+        drag.as_ref().expect("the new drag"),
+        &board,
+        position,
+        source,
+        DragSelector::Updated,
+        1,
+    );
+    assert_eq!(old_calls.get(), 1);
+    assert_eq!(next_calls.get(), 2);
+    assert_eq!(
+        drag.as_ref()
+            .expect("the new drag")
+            .verify_source_mask(DragContext::OutsideApplication),
+        DragOperation::COPY
+    );
+    let mouse = Event::synthetic_mouse(
+        main_thread,
+        EventType::LeftMouseDown,
+        position,
+        ModifierFlags::default(),
+        1,
+        0.0,
+    )
+    .expect("a retained mouse-down event");
+    assert_eq!(
+        drag.as_ref().expect("the new drag").verify_items(
+            &mouse,
+            &[DragItem::File {
+                path: &path,
+                is_directory: false,
+            }],
+        ),
+        1
+    );
+    assert_eq!(next_calls.get(), 3);
+}
+
 fn main() {
     let main_thread = MainThreadMarker::new().expect("the main thread");
     exercise_destination_and_source(main_thread);
@@ -550,5 +648,6 @@ fn main() {
     exercise_close_during_drop(main_thread);
     exercise_queued_event_during_close(main_thread);
     exercise_drop_inside_handler(main_thread);
+    exercise_re_registration(main_thread);
     println!("Hidden drag callbacks, operations, paths, and teardown passed.");
 }

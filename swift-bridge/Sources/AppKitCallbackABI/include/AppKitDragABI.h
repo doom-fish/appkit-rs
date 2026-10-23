@@ -42,4 +42,6 @@ typedef struct {
     bool is_directory;
 } AppKitDragItem;
 
+void appkit_drag_detach(void *window, uint64_t token);
+
 #endif

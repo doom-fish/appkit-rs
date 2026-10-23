@@ -349,10 +349,10 @@ public func appkit_drag_attach(
 }
 
 @_cdecl("appkit_drag_detach")
-public func appkit_drag_detach(_ windowHandle: UnsafeMutableRawPointer?) {
-    guard Thread.isMainThread, let windowHandle else { return }
+public func appkit_drag_detach(_ windowHandle: UnsafeMutableRawPointer?, _ token: UInt64) {
+    guard Thread.isMainThread, let windowHandle, token != 0 else { return }
     let window: NSWindow = appkitObject(windowHandle)
-    guard let owner = dragOwner(window) else { return }
+    guard let owner = dragOwner(window), owner.token == token else { return }
     owner.detach()
     objc_setAssociatedObject(window, &dragOwnerKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     _ = appkit_try { window.unregisterDraggedTypes() }
