@@ -35,3 +35,34 @@ public func appkit_application_order_front_standard_about_panel(
     }
     application.orderFrontStandardAboutPanel(options: options)
 }
+
+@_cdecl("appkit_application_set_activation_policy")
+public func appkit_application_set_activation_policy(_ handle: UnsafeMutableRawPointer, _ policy: Int64) -> Bool {
+    let application: NSApplication = appkitObject(handle)
+    guard let policy = NSApplication.ActivationPolicy(rawValue: Int(policy)) else {
+        return false
+    }
+    return application.setActivationPolicy(policy)
+}
+
+@_cdecl("appkit_application_activate")
+public func appkit_application_activate(_ handle: UnsafeMutableRawPointer) {
+    let application: NSApplication = appkitObject(handle)
+    if #available(macOS 14.0, *) {
+        application.activate()
+    } else {
+        application.activate(ignoringOtherApps: true)
+    }
+}
+
+@_cdecl("appkit_application_run")
+public func appkit_application_run(_ handle: UnsafeMutableRawPointer) {
+    let application: NSApplication = appkitObject(handle)
+    application.run()
+}
+
+@_cdecl("appkit_application_terminate")
+public func appkit_application_terminate(_ handle: UnsafeMutableRawPointer) {
+    let application: NSApplication = appkitObject(handle)
+    application.terminate(nil)
+}

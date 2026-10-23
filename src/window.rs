@@ -100,6 +100,23 @@ pub struct Window {
 }
 
 impl Window {
+    pub fn new(_main_thread: MainThreadMarker, content_rect: CGRect, title: &str) -> Result<Self, AppKitError> {
+        let title = c_string(title)?;
+        let window = unsafe {
+            ffi::appkit_window_new(
+                content_rect.origin.x,
+                content_rect.origin.y,
+                content_rect.size.width,
+                content_rect.size.height,
+                title.as_ptr(),
+            )
+        };
+        let handle = unsafe { Handle::from_retained(window) };
+        Ok(Self {
+            handle: handle.expect("NSWindow gives a window"),
+        })
+    }
+
     #[must_use]
     pub unsafe fn from_raw_borrowed(window: NonNull<c_void>, _main_thread: MainThreadMarker) -> Self {
         Self {
@@ -203,5 +220,13 @@ impl Window {
 
     pub fn order_front(&self) {
         unsafe { ffi::appkit_window_order_front(self.as_ptr()) };
+    }
+
+    pub fn make_key_and_order_front(&self) {
+        unsafe { ffi::appkit_window_make_key_and_order_front(self.as_ptr()) };
+    }
+
+    pub fn close(&self) {
+        unsafe { ffi::appkit_window_close(self.as_ptr()) };
     }
 }

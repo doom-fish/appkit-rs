@@ -1,6 +1,6 @@
 # appkit-rs
 
-Safe Rust bindings for Apple's [AppKit](https://developer.apple.com/documentation/appkit) framework on macOS. This release gives access to windows and views that other code makes, to screens, to the shared application, to images, and to the accessibility settings of the display.
+Safe Rust bindings for Apple's [AppKit](https://developer.apple.com/documentation/appkit) framework on macOS. This release makes windows, gives access to windows and views that other code makes, runs the event loop, and gives access to screens, the shared application, images and the accessibility settings of the display.
 
 The crate requires macOS 11 or later.
 
@@ -61,6 +61,28 @@ fn style(ns_view: NonNull<c_void>) {
 - `Window::animate_alpha_value` changes the alpha value through the animator of the window.
 - Geometry values are `CGRect`, `CGSize` and `CGPoint` from `apple-cf`. This crate exports these types again.
 
+## Windows and the event loop
+
+`Window::new` makes a titled window that the user can close, minimize and resize. The window stays in memory after the user closes it.
+
+```rust,no_run
+use appkit::prelude::*;
+
+fn main() -> Result<(), AppKitError> {
+    let main_thread = MainThreadMarker::new().expect("main thread");
+    let application = Application::shared(main_thread);
+    assert!(application.set_activation_policy(ActivationPolicy::Regular));
+    let window = Window::new(main_thread, CGRect::new(200.0, 200.0, 480.0, 320.0), "Example")?;
+    window.make_key_and_order_front();
+    application.activate();
+    application.run();
+    Ok(())
+}
+```
+
+- `Application::run` returns only after a call to `-stop:`. `Application::terminate` ends the process.
+- `Window::as_ptr` gives the `NSWindow` pointer for other libraries, for example an accessibility adapter.
+
 ## Raw functions
 
 The `ffi` module declares the functions of the Swift bridge. An object pointer that a bridge function returns has a retain count that the caller owns, except the pointer from `appkit_view_layer`. Use `ffi::appkit_release` to release an object. Use `ffi::appkit_string_free` to release a string.
@@ -70,6 +92,7 @@ The `ffi` module declares the functions of the Swift bridge. An object pointer t
 ```bash
 cargo run --example 01_accessibility
 cargo run --example 02_screens
+cargo run --example 03_window
 ```
 
 ## License

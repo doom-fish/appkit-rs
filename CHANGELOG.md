@@ -4,6 +4,15 @@ This file records the important changes to `appkit-rs`.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Window::new`, which makes a titled window that the user can close, minimize and resize.
+- `Window::make_key_and_order_front` and `Window::close`.
+- `ActivationPolicy`, and `Application::set_activation_policy`, `Application::activate`, `Application::run` and `Application::terminate`.
+- The `03_window` example.
+
 ## [0.1.0] - 2026-10-23
 
 ### Added

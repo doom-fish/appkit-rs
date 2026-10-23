@@ -15,6 +15,23 @@ pub struct AboutPanelOptions {
     pub version: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActivationPolicy {
+    Regular,
+    Accessory,
+    Prohibited,
+}
+
+impl ActivationPolicy {
+    const fn raw(self) -> i64 {
+        match self {
+            Self::Regular => 0,
+            Self::Accessory => 1,
+            Self::Prohibited => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Application {
     handle: Handle,
@@ -32,6 +49,23 @@ impl Application {
     #[must_use]
     pub const fn as_ptr(&self) -> *mut c_void {
         self.handle.as_ptr()
+    }
+
+    #[must_use]
+    pub fn set_activation_policy(&self, policy: ActivationPolicy) -> bool {
+        unsafe { ffi::appkit_application_set_activation_policy(self.as_ptr(), policy.raw()) }
+    }
+
+    pub fn activate(&self) {
+        unsafe { ffi::appkit_application_activate(self.as_ptr()) };
+    }
+
+    pub fn run(&self) {
+        unsafe { ffi::appkit_application_run(self.as_ptr()) };
+    }
+
+    pub fn terminate(&self) {
+        unsafe { ffi::appkit_application_terminate(self.as_ptr()) };
     }
 
     pub fn set_application_icon_image(&self, image: Option<&Image>) {

@@ -14,6 +14,7 @@ extern "C" {
     pub fn appkit_view_wants_layer(view: *mut c_void) -> bool;
     pub fn appkit_view_set_wants_layer(view: *mut c_void, wants: bool);
 
+    pub fn appkit_window_new(x: f64, y: f64, width: f64, height: f64, title: *const c_char) -> *mut c_void;
     pub fn appkit_window_content_view(window: *mut c_void) -> *mut c_void;
     pub fn appkit_window_appearance(window: *mut c_void) -> i32;
     pub fn appkit_window_set_appearance(window: *mut c_void, appearance: i32);
@@ -33,6 +34,8 @@ extern "C" {
     pub fn appkit_window_animation_behavior(window: *mut c_void) -> i64;
     pub fn appkit_window_set_animation_behavior(window: *mut c_void, behavior: i64);
     pub fn appkit_window_order_front(window: *mut c_void);
+    pub fn appkit_window_make_key_and_order_front(window: *mut c_void);
+    pub fn appkit_window_close(window: *mut c_void);
 
     pub fn appkit_screen_main() -> *mut c_void;
     pub fn appkit_screen_count() -> i64;
@@ -45,6 +48,10 @@ extern "C" {
 
     pub fn appkit_application_shared() -> *mut c_void;
     pub fn appkit_application_set_application_icon_image(application: *mut c_void, image: *mut c_void);
+    pub fn appkit_application_set_activation_policy(application: *mut c_void, policy: i64) -> bool;
+    pub fn appkit_application_activate(application: *mut c_void);
+    pub fn appkit_application_run(application: *mut c_void);
+    pub fn appkit_application_terminate(application: *mut c_void);
     pub fn appkit_application_order_front_standard_about_panel(
         application: *mut c_void,
         application_name: *const c_char,

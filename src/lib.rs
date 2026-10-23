@@ -17,7 +17,7 @@ pub mod workspace;
 
 pub use apple_cf::cg::{CGPoint, CGRect, CGSize};
 pub use appearance::AppearanceName;
-pub use application::{AboutPanelOptions, Application};
+pub use application::{AboutPanelOptions, ActivationPolicy, Application};
 pub use error::AppKitError;
 pub use image::Image;
 pub use main_thread::MainThreadMarker;
@@ -29,7 +29,7 @@ pub use workspace::Workspace;
 
 pub mod prelude {
     pub use crate::appearance::AppearanceName;
-    pub use crate::application::{AboutPanelOptions, Application};
+    pub use crate::application::{AboutPanelOptions, ActivationPolicy, Application};
     pub use crate::error::AppKitError;
     pub use crate::image::Image;
     pub use crate::main_thread::MainThreadMarker;

@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/doom-fish/appkit-rs"
 repository = "https://github.com/doom-fish/appkit-rs"
-description = "Safe Rust bindings for Apple's AppKit framework on macOS: windows, views, screens, the application and accessibility settings"
+description = "Safe Rust bindings for Apple's AppKit framework on macOS: windows, views, screens, the application, the event loop and accessibility settings"
 authors = ["Per Johansson <per@doom.fish>"]
 keywords = ["appkit", "nswindow", "cocoa", "macos", "apple"]
 categories = ["api-bindings", "os::macos-apis", "gui"]
@@ -55,6 +55,9 @@ name = "01_accessibility"
 
 [[example]]
 name = "02_screens"
+
+[[example]]
+name = "03_window"
 
 [profile.release]
 debug = "full"

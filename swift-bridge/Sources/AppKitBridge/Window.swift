@@ -11,6 +11,25 @@ private let appearanceNames: [NSAppearance.Name] = [
     .accessibilityHighContrastVibrantDark,
 ]
 
+@_cdecl("appkit_window_new")
+public func appkit_window_new(
+    _ x: Double,
+    _ y: Double,
+    _ width: Double,
+    _ height: Double,
+    _ title: UnsafePointer<CChar>
+) -> UnsafeMutableRawPointer {
+    let window = NSWindow(
+        contentRect: NSRect(x: x, y: y, width: width, height: height),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable],
+        backing: .buffered,
+        defer: false
+    )
+    window.isReleasedWhenClosed = false
+    window.title = String(cString: title)
+    return Unmanaged.passRetained(window).toOpaque()
+}
+
 @_cdecl("appkit_window_content_view")
 public func appkit_window_content_view(_ handle: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? {
     let window: NSWindow = appkitObject(handle)
@@ -130,4 +149,16 @@ public func appkit_window_set_animation_behavior(_ handle: UnsafeMutableRawPoint
 public func appkit_window_order_front(_ handle: UnsafeMutableRawPointer) {
     let window: NSWindow = appkitObject(handle)
     window.orderFront(nil)
+}
+
+@_cdecl("appkit_window_make_key_and_order_front")
+public func appkit_window_make_key_and_order_front(_ handle: UnsafeMutableRawPointer) {
+    let window: NSWindow = appkitObject(handle)
+    window.makeKeyAndOrderFront(nil)
+}
+
+@_cdecl("appkit_window_close")
+public func appkit_window_close(_ handle: UnsafeMutableRawPointer) {
+    let window: NSWindow = appkitObject(handle)
+    window.close()
 }

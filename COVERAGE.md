@@ -1,7 +1,7 @@
 # COVERAGE
 
 - Framework: `AppKit.framework`
-- Scope: this release covers windows and views that other code makes, screens, the shared application, images, the scroller style and the accessibility display settings. It does not make windows, views or menus, and it does not run the event loop.
+- Scope: this release makes titled windows, covers windows and views that other code makes, runs the event loop, and covers screens, the shared application, images, the scroller style and the accessibility display settings. It does not make views or menus.
 - Legend: `✅` implemented, `⏭️` not implemented
 
 ## NSView
@@ -20,6 +20,7 @@
 
 | Apple API | Status | Rust surface | Notes |
 | --- | --- | --- | --- |
+| `-initWithContentRect:styleMask:backing:defer:` | ✅ | `Window::new` | A titled window that the user can close, minimize and resize. `releasedWhenClosed` is `NO`. |
 | an existing `NSWindow` | ✅ | `Window::from_raw_borrowed` | Retains the window. Needs a `MainThreadMarker`. |
 | `contentView` | ✅ | `Window::content_view` |  |
 | `appearance` | ✅ | `Window::appearance`, `Window::set_appearance` | The standard appearance names only. |
@@ -34,7 +35,9 @@
 | `animator.alphaValue` | ✅ | `Window::animate_alpha_value` |  |
 | `animationBehavior` | ✅ | `Window::animation_behavior`, `Window::set_animation_behavior` |  |
 | `-orderFront:` | ✅ | `Window::order_front` |  |
-| window creation, `-setFrame:display:`, `-makeKeyAndOrderFront:`, `-close`, style masks, tabs, sheets | ⏭️ |  |  |
+| `-makeKeyAndOrderFront:` | ✅ | `Window::make_key_and_order_front` |  |
+| `-close` | ✅ | `Window::close` |  |
+| `-setFrame:display:`, other style masks, tabs, sheets | ⏭️ |  |  |
 
 ## NSScreen
 
@@ -56,7 +59,11 @@
 | `+sharedApplication` | ✅ | `Application::shared` |  |
 | `applicationIconImage` | ✅ | `Application::set_application_icon_image` |  |
 | `-orderFrontStandardAboutPanelWithOptions:` | ✅ | `Application::order_front_standard_about_panel` | The application name, the application version and the version. |
-| `-run`, `-terminate:`, `-activateIgnoringOtherApps:`, menus, the dock tile | ⏭️ |  |  |
+| `-setActivationPolicy:` | ✅ | `Application::set_activation_policy` |  |
+| `-activate`, `-activateIgnoringOtherApps:` | ✅ | `Application::activate` | `-activate` on macOS 14 and later. |
+| `-run` | ✅ | `Application::run` |  |
+| `-terminate:` | ✅ | `Application::terminate` |  |
+| `-stop:`, menus, the dock tile | ⏭️ |  |  |
 
 ## Other classes
 
