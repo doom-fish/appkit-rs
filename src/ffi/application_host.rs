@@ -8,7 +8,6 @@ extern "C" {
         table: *const ApplicationHostCallbackTableV1,
     ) -> *mut c_void;
     pub(crate) fn appkit_application_host_uninstall(delegate: *mut c_void) -> bool;
-    pub(crate) fn appkit_application_host_reply_to_termination(token: u64, allowed: bool);
     pub fn appkit_application_host_probe(
         delegate: *mut c_void,
         method: i32,

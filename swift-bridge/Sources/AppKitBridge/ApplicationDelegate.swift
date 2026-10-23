@@ -14,15 +14,9 @@ fileprivate enum AppKitHostMenuAction: Int32 {
 }
 
 final class AppKitApplicationDelegate: NSResponder, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
-    private static var pendingTerminationByToken: [UInt64: AppKitApplicationDelegate] = [:]
-
     let token: UInt64
     private let table: AppKitApplicationHostCallbacksV1
     private var active = true
-    private var probingTermination = false
-    private var pendingProbeTermination = false
-    fileprivate var lastProbeTerminationReply: Bool?
-    fileprivate var probeTerminationReplyCount = 0
 
     init?(token: UInt64, table: AppKitApplicationHostCallbacksV1) {
         guard Thread.isMainThread,
@@ -65,33 +59,7 @@ final class AppKitApplicationDelegate: NSResponder, NSApplicationDelegate, NSMen
         return withExtendedLifetime(self, callback)
     }
 
-    fileprivate static func replyToTermination(_ token: UInt64, allowed: Bool) {
-        guard Thread.isMainThread,
-              let delegate = pendingTerminationByToken.removeValue(forKey: token) else {
-            return
-        }
-        if delegate.pendingProbeTermination {
-            delegate.pendingProbeTermination = false
-            delegate.lastProbeTerminationReply = allowed
-            delegate.probeTerminationReplyCount += 1
-            if allowed {
-                delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
-            }
-        } else {
-            DispatchQueue.main.async {
-                withExtendedLifetime(delegate) {
-                    let replied = appkit_try {
-                        NSApplication.shared.reply(toApplicationShouldTerminate: allowed)
-                    } == nil
-                    guard replied else { return }
-                }
-            }
-        }
-    }
-
     fileprivate func probeShouldTerminate(_ application: NSApplication, includeWillTerminate: Bool) -> NSApplication.TerminateReply {
-        probingTermination = true
-        defer { probingTermination = false }
         let reply = applicationShouldTerminate(application)
         if includeWillTerminate && reply == .terminateNow {
             applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
@@ -121,18 +89,7 @@ final class AppKitApplicationDelegate: NSResponder, NSApplicationDelegate, NSMen
         let reply = deliver(Int32(1)) {
             table.should_terminate?(token) ?? 1
         }
-        switch reply {
-        case 0:
-            return .terminateCancel
-        case 2:
-            Self.pendingTerminationByToken[token] = self
-            if probingTermination {
-                pendingProbeTermination = true
-            }
-            return .terminateLater
-        default:
-            return .terminateNow
-        }
+        return reply == 0 ? .terminateCancel : .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -324,11 +281,6 @@ public func appkit_application_host_uninstall(_ handle: UnsafeMutableRawPointer)
     return removed
 }
 
-@_cdecl("appkit_application_host_reply_to_termination")
-public func appkit_application_host_reply_to_termination(_ token: UInt64, _ allowed: Bool) {
-    AppKitApplicationDelegate.replyToTermination(token, allowed: allowed)
-}
-
 @_cdecl("appkit_application_host_probe")
 public func appkit_application_host_probe(
     _ handle: UnsafeMutableRawPointer,
@@ -405,10 +357,6 @@ public func appkit_application_host_probe(
             }
         }
         return 1
-    case 15:
-        return delegate.lastProbeTerminationReply.map { $0 ? 1 : 0 } ?? -2
-    case 16:
-        return Int64(delegate.probeTerminationReplyCount)
     case 17:
         return Int64(delegate.probeShouldTerminate(application, includeWillTerminate: true).rawValue)
     default:

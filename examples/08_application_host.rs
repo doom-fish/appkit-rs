@@ -55,7 +55,7 @@ fn configured_handlers(
             seen.borrow_mut().lifecycle.push("will finish");
             assert_eq!(probe(nested.get(), 3, 0, 0, false), 0);
             assert_eq!(probe(nested.get(), 2, 0, 0, false), 1);
-            assert_eq!(probe(nested.get(), 12, 0, 0, false), 2);
+            assert_eq!(probe(nested.get(), 12, 0, 0, false), 0);
         })));
 
     let seen = Rc::clone(calls);
@@ -82,7 +82,7 @@ fn configured_handlers(
             calls.should_terminate
         };
         if attempts == 1 {
-            assert_eq!(probe(nested.get(), 12, 0, 0, false), 2);
+            assert_eq!(probe(nested.get(), 12, 0, 0, false), 1);
         }
         attempts == 2
     })));
@@ -204,10 +204,7 @@ fn termination_from_menu_action(main_thread: MainThreadMarker, has_handler: bool
         .menu_item_action
         .replace(Some(Box::new(move |_, _| {
             seen.borrow_mut().push("menu start");
-            assert_eq!(
-                probe(nested.get(), 17, 0, 0, false),
-                if has_handler { 2 } else { 1 }
-            );
+            assert_eq!(probe(nested.get(), 17, 0, 0, false), 1);
             seen.borrow_mut().push("menu end");
         })));
 
@@ -220,20 +217,16 @@ fn termination_from_menu_action(main_thread: MainThreadMarker, has_handler: bool
             *events.borrow(),
             [
                 "menu start",
-                "menu end",
                 "should terminate",
-                "will terminate"
+                "will terminate",
+                "menu end"
             ]
         );
-        assert_eq!(probe(delegate, 15, 0, 0, false), 1);
-        assert_eq!(probe(delegate, 16, 0, 0, false), 1);
     } else {
         assert_eq!(
             *events.borrow(),
             ["menu start", "will terminate", "menu end"]
         );
-        assert_eq!(probe(delegate, 15, 0, 0, false), -2);
-        assert_eq!(probe(delegate, 16, 0, 0, false), 0);
     }
 }
 
@@ -260,36 +253,7 @@ fn termination_handler_can_close_host(main_thread: MainThreadMarker) {
     unsafe { ffi::appkit_release(delegate) };
 }
 
-fn pending_termination_survives_host_drop(main_thread: MainThreadMarker) {
-    let holder = Rc::new(RefCell::new(None));
-    let weak = Rc::downgrade(&holder);
-    let delegate_ptr = Rc::new(Cell::new(core::ptr::null_mut()));
-    let nested = Rc::clone(&delegate_ptr);
-    let handlers = ApplicationHostHandlers::default();
-    let _ = handlers.should_terminate.replace(Some(Box::new(|| {
-        panic!("a deactivated host cannot invoke its handler")
-    })));
-    let _ = handlers
-        .menu_item_action
-        .replace(Some(Box::new(move |_, _| {
-            assert_eq!(probe(nested.get(), 17, 0, 0, false), 2);
-            let holder = weak.upgrade().expect("the active host");
-            let host = holder.borrow_mut().take();
-            drop(host);
-        })));
-    let host = ApplicationHost::install(main_thread, handlers).expect("a disposable host");
-    let delegate = host.delegate_borrowed_ptr();
-    delegate_ptr.set(delegate);
-    unsafe { ffi::appkit_retain(delegate) };
-    holder.replace(Some(host));
-    assert_eq!(probe(delegate, 6, 0, 10, false), 0);
-    assert!(holder.borrow().is_none());
-    assert_eq!(probe(delegate, 15, 0, 0, false), 1);
-    assert_eq!(probe(delegate, 16, 0, 0, false), 1);
-    unsafe { ffi::appkit_release(delegate) };
-}
-
-fn actual_termination_child(main_thread: MainThreadMarker) {
+fn actual_termination_child(main_thread: MainThreadMarker, allowed: Option<bool>) {
     use std::io::Write as _;
 
     let handlers = ApplicationHostHandlers::default();
@@ -297,6 +261,13 @@ fn actual_termination_child(main_thread: MainThreadMarker) {
         println!("will terminate");
         std::io::stdout().flush().expect("a flushed callback");
     })));
+    if let Some(allowed) = allowed {
+        let _ = handlers.should_terminate.replace(Some(Box::new(move || {
+            println!("should terminate");
+            std::io::stdout().flush().expect("a flushed decision");
+            allowed
+        })));
+    }
     let _ = handlers
         .menu_item_action
         .replace(Some(Box::new(move |_, _| {
@@ -310,11 +281,11 @@ fn actual_termination_child(main_thread: MainThreadMarker) {
     println!("child completed");
 }
 
-fn actual_termination_ends_the_process() {
+fn actual_termination_ends_the_process(mode: &str, expected_output: &[&str]) {
     use std::time::{Duration, Instant};
 
     let mut child = std::process::Command::new(std::env::current_exe().expect("the example path"))
-        .arg("--terminate-now")
+        .arg(mode)
         .stdout(std::process::Stdio::piped())
         .spawn()
         .expect("a child process");
@@ -333,10 +304,7 @@ fn actual_termination_ends_the_process() {
     let child = child.wait_with_output().expect("the child output");
     assert!(child.status.success(), "the child process did not exit");
     let output = String::from_utf8(child.stdout).expect("the child output");
-    assert_eq!(
-        output.lines().collect::<Vec<_>>(),
-        ["menu action", "will terminate"]
-    );
+    assert_eq!(output.lines().collect::<Vec<_>>(), expected_output);
 }
 
 fn verify_launch_and_reentry(delegate: *mut c_void, calls: &Rc<RefCell<Calls>>) {
@@ -347,16 +315,40 @@ fn verify_launch_and_reentry(delegate: *mut c_void, calls: &Rc<RefCell<Calls>>) 
     );
     assert_eq!(calls.borrow().reopen, []);
     assert_eq!(calls.borrow().should_terminate, 1);
-    assert_eq!(probe(delegate, 15, 0, 0, false), 0);
-    assert_eq!(probe(delegate, 16, 0, 0, false), 1);
     assert_eq!(probe(delegate, 1, 0, 0, false), 0);
+}
+
+fn run_child_mode(main_thread: MainThreadMarker, mode: &str) {
+    let allowed = match mode {
+        "--terminate-now" => None,
+        "--terminate-with-handler" => Some(true),
+        "--cancel-with-handler" => Some(false),
+        _ => panic!("invalid termination mode"),
+    };
+    actual_termination_child(main_thread, allowed);
+}
+
+fn verify_termination_processes() {
+    actual_termination_ends_the_process("--terminate-now", &["menu action", "will terminate"]);
+    actual_termination_ends_the_process(
+        "--terminate-with-handler",
+        &["menu action", "should terminate", "will terminate"],
+    );
+    actual_termination_ends_the_process(
+        "--cancel-with-handler",
+        &[
+            "menu action",
+            "should terminate",
+            "menu action returned",
+            "child completed",
+        ],
+    );
 }
 
 fn main() {
     let main_thread = MainThreadMarker::new().expect("the main thread");
     if let Some(mode) = std::env::args().nth(1) {
-        assert_eq!(mode, "--terminate-now");
-        actual_termination_child(main_thread);
+        run_child_mode(main_thread, &mode);
         return;
     }
     let defaults = installed_default_host(main_thread);
@@ -452,7 +444,6 @@ fn main() {
     termination_from_menu_action(main_thread, false);
     termination_from_menu_action(main_thread, true);
     termination_handler_can_close_host(main_thread);
-    pending_termination_survives_host_drop(main_thread);
-    actual_termination_ends_the_process();
+    verify_termination_processes();
     println!("The application delegate remains inactive after its host closes.");
 }
