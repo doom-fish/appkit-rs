@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ### Added
 
+- `HostedView` is an `NSView` that hosts a renderer's `CAMetalLayer`. It forwards key, mouse, scroll, pressure, magnify and swipe events, display, size, backing-property and appearance changes, cursor rectangles and mouse tracking through token callbacks, and it can own titlebar drags.
 - `Menu` and `MenuItem` build menus with responder actions, key equivalents, check states, submenus and application menu roles (main, Services, Windows and Help), and give a retained Dock menu to the application host. A submenu that would contain its own menu is refused.
 - A unique pasteboard gets its own UUID name, and pasteboard calls return a failure value instead of a native exception.
 - `Window::encode_restorable_state` saves the secure native state of a window, and `Window::restore_state` restores it. Invalid data gives an error. Restore does not guarantee the original Space.
