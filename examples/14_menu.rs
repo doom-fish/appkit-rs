@@ -1,6 +1,6 @@
 use appkit::application_host::MENU_ITEM_ACTION_SELECTOR;
 use appkit::menu::{KeyEquivalentModifiers, Menu, MenuItem, MenuItemAction, MenuItemState};
-use appkit::MainThreadMarker;
+use appkit::{ffi, CGRect, MainThreadMarker, Window};
 
 fn main() {
     let main_thread = MainThreadMarker::new().expect("the main thread");
@@ -16,6 +16,8 @@ fn main() {
     let item = check_action_item(main_thread);
     check_menu_contents(main_thread, &menu, item);
     check_standard_actions(main_thread);
+    check_direct_cycles(main_thread);
+    check_indirect_cycles(main_thread);
 
     let dock_menu = Menu::new(main_thread, "Dock").expect("a Dock menu");
     let retained = dock_menu.retain_for_dock();
@@ -133,16 +135,46 @@ fn check_menu_contents(main_thread: MainThreadMarker, menu: &Menu, item: MenuIte
 }
 
 fn check_standard_actions(main_thread: MainThreadMarker) {
+    let window = Window::new(
+        main_thread,
+        CGRect::new(0.0, 0.0, 100.0, 100.0),
+        "Menu actions",
+    )
+    .expect("a hidden window");
+    let window_actions = [
+        (MenuItemAction::PerformClose, "performClose:"),
+        (MenuItemAction::PerformMiniaturize, "performMiniaturize:"),
+        (MenuItemAction::PerformZoom, "performZoom:"),
+        (MenuItemAction::ToggleFullScreen, "toggleFullScreen:"),
+        (MenuItemAction::ToggleTabBar, "toggleTabBar:"),
+        (MenuItemAction::SelectNextTab, "selectNextTab:"),
+        (MenuItemAction::SelectPreviousTab, "selectPreviousTab:"),
+        (MenuItemAction::MoveTabToNewWindow, "moveTabToNewWindow:"),
+        (MenuItemAction::MergeAllWindows, "mergeAllWindows:"),
+        (MenuItemAction::ToggleTabOverview, "toggleTabOverview:"),
+    ];
+    for (action, selector) in window_actions {
+        let item = check_standard_item(main_thread, action, selector);
+        assert!(
+            unsafe {
+                ffi::menu::appkit_menu_probe_window_responds_to_item(window.as_ptr(), item.as_ptr())
+            },
+            "The window does not respond to {selector}"
+        );
+    }
+    let key_window_undo_actions = [
+        (MenuItemAction::Undo, "undo:"),
+        (MenuItemAction::Redo, "redo:"),
+    ];
+    for (action, selector) in key_window_undo_actions {
+        let item = check_standard_item(main_thread, action, selector);
+        assert!(!item.has_explicit_target());
+    }
     for (action, selector) in [
         (MenuItemAction::Cut, "cut:"),
         (MenuItemAction::Copy, "copy:"),
         (MenuItemAction::Paste, "paste:"),
         (MenuItemAction::SelectAll, "selectAll:"),
-        (MenuItemAction::Undo, "undo:"),
-        (MenuItemAction::Redo, "redo:"),
-        (MenuItemAction::PerformClose, "performClose:"),
-        (MenuItemAction::PerformMiniaturize, "performMiniaturize:"),
-        (MenuItemAction::PerformZoom, "performZoom:"),
         (MenuItemAction::Hide, "hide:"),
         (
             MenuItemAction::HideOtherApplications,
@@ -153,13 +185,6 @@ fn check_standard_actions(main_thread: MainThreadMarker) {
             "unhideAllApplications:",
         ),
         (MenuItemAction::Terminate, "terminate:"),
-        (MenuItemAction::ToggleFullScreen, "toggleFullScreen:"),
-        (MenuItemAction::ToggleTabBar, "toggleTabBar:"),
-        (MenuItemAction::SelectNextTab, "selectNextTab:"),
-        (MenuItemAction::SelectPreviousTab, "selectPreviousTab:"),
-        (MenuItemAction::MoveTabToNewWindow, "moveTabToNewWindow:"),
-        (MenuItemAction::MergeAllWindows, "mergeAllWindows:"),
-        (MenuItemAction::ShowAllTabs, "showAllTabs:"),
         (MenuItemAction::ArrangeInFront, "arrangeInFront:"),
         (
             MenuItemAction::OrderFrontStandardAboutPanel,
@@ -167,9 +192,107 @@ fn check_standard_actions(main_thread: MainThreadMarker) {
         ),
         (MenuItemAction::ShowHelp, "showHelp:"),
     ] {
-        let system_item = MenuItem::new(main_thread, "System", action).expect("a system item");
-        assert_eq!(system_item.action(), action);
-        assert_eq!(system_item.action_selector().as_deref(), Some(selector));
-        assert!(!system_item.has_explicit_target());
+        let _ = check_standard_item(main_thread, action, selector);
     }
+}
+
+fn check_standard_item(
+    main_thread: MainThreadMarker,
+    action: MenuItemAction,
+    selector: &str,
+) -> MenuItem {
+    let item = MenuItem::new(main_thread, "System", action).expect("a system item");
+    assert_eq!(item.action(), action);
+    assert_eq!(item.action_selector().as_deref(), Some(selector));
+    assert!(!item.has_explicit_target());
+    item
+}
+
+fn check_direct_cycles(main_thread: MainThreadMarker) {
+    for insert in [false, true] {
+        let menu = Menu::new(main_thread, "Direct").expect("a menu");
+        let item = MenuItem::new(main_thread, "Item", MenuItemAction::None).expect("an item");
+        assert!(if insert {
+            menu.insert_item(0, &item)
+        } else {
+            menu.add_item(&item)
+        });
+        assert!(!item.set_submenu(Some(&menu)));
+        assert!(item.submenu().is_none());
+        assert_eq!(menu.len(), 1);
+        assert!(item.set_enabled(false));
+
+        let menu = Menu::new(main_thread, "Direct").expect("a menu");
+        let item = MenuItem::new(main_thread, "Item", MenuItemAction::None).expect("an item");
+        assert!(item.set_submenu(Some(&menu)));
+        assert!(!if insert {
+            menu.insert_item(0, &item)
+        } else {
+            menu.add_item(&item)
+        });
+        assert!(menu.is_empty());
+        assert_eq!(
+            item.submenu()
+                .and_then(|submenu| submenu.title())
+                .as_deref(),
+            Some("Direct")
+        );
+        assert!(item.set_enabled(false));
+    }
+}
+
+fn nested_menus(main_thread: MainThreadMarker) -> (Menu, Menu) {
+    let root = Menu::new(main_thread, "Root").expect("a root menu");
+    let middle = Menu::new(main_thread, "Middle").expect("a middle menu");
+    let leaf = Menu::new(main_thread, "Leaf").expect("a leaf menu");
+    let root_item =
+        MenuItem::new(main_thread, "Middle", MenuItemAction::None).expect("a root item");
+    let middle_item =
+        MenuItem::new(main_thread, "Leaf", MenuItemAction::None).expect("a middle item");
+    assert!(root.add_item(&root_item));
+    assert!(root_item.set_submenu(Some(&middle)));
+    assert!(middle.add_item(&middle_item));
+    assert!(middle_item.set_submenu(Some(&leaf)));
+    (root, leaf)
+}
+
+fn check_indirect_cycles(main_thread: MainThreadMarker) {
+    for insert in [false, true] {
+        let (root, leaf) = nested_menus(main_thread);
+        let attached =
+            MenuItem::new(main_thread, "Back", MenuItemAction::None).expect("an attached item");
+        assert!(if insert {
+            leaf.insert_item(0, &attached)
+        } else {
+            leaf.add_item(&attached)
+        });
+        assert!(!attached.set_submenu(Some(&root)));
+        assert!(attached.submenu().is_none());
+        assert!(attached.set_enabled(false));
+
+        let configured =
+            MenuItem::new(main_thread, "Back", MenuItemAction::None).expect("a configured item");
+        assert!(configured.set_submenu(Some(&root)));
+        assert!(!leaf.add_item(&configured));
+        assert!(!leaf.insert_item(0, &configured));
+        assert_eq!(leaf.len(), 1);
+        assert!(configured.set_enabled(false));
+    }
+
+    let root = Menu::new(main_thread, "Root").expect("a root menu");
+    let middle = Menu::new(main_thread, "Middle").expect("a middle menu");
+    let leaf = Menu::new(main_thread, "Leaf").expect("a leaf menu");
+    let leaf_item = MenuItem::new(main_thread, "Root", MenuItemAction::None).expect("a leaf item");
+    assert!(leaf_item.set_submenu(Some(&root)));
+    assert!(leaf.add_item(&leaf_item));
+    let root_item =
+        MenuItem::new(main_thread, "Middle", MenuItemAction::None).expect("a root item");
+    assert!(root_item.set_submenu(Some(&middle)));
+    assert!(root.add_item(&root_item));
+    let middle_item =
+        MenuItem::new(main_thread, "Leaf", MenuItemAction::None).expect("a middle item");
+    assert!(middle_item.set_submenu(Some(&leaf)));
+    assert!(!middle.add_item(&middle_item));
+    assert!(middle.is_empty());
+    assert!(leaf_item.set_enabled(false));
 }

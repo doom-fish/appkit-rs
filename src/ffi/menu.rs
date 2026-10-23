@@ -82,4 +82,8 @@ extern "C" {
     ) -> bool;
     pub(crate) fn appkit_menu_item_has_explicit_target(item: *mut c_void) -> bool;
     pub(crate) fn appkit_menu_bytes_free(bytes: *mut u8);
+    pub fn appkit_menu_probe_window_responds_to_item(
+        window: *mut c_void,
+        item: *mut c_void,
+    ) -> bool;
 }

@@ -24,7 +24,7 @@ private let appkitMenuSelectors: [String?] = [
     "selectPreviousTab:",
     "moveTabToNewWindow:",
     "mergeAllWindows:",
-    "showAllTabs:",
+    "toggleTabOverview:",
     "arrangeInFront:",
     "orderFrontStandardAboutPanel:",
     "showHelp:",
@@ -56,6 +56,18 @@ private func appkitMenuSelector(_ action: Int32) -> Selector? {
         return nil
     }
     return NSSelectorFromString(name)
+}
+
+private func appkitMenuWouldCycle(_ submenu: NSMenu, under menu: NSMenu?) -> Bool {
+    var ancestors = Set<ObjectIdentifier>()
+    var current = menu
+    while let ancestor = current {
+        if ancestor === submenu || !ancestors.insert(ObjectIdentifier(ancestor)).inserted {
+            return true
+        }
+        current = ancestor.supermenu
+    }
+    return false
 }
 
 @_cdecl("appkit_menu_new")
@@ -131,7 +143,17 @@ public func appkit_menu_add_item(
     guard Thread.isMainThread else { return false }
     let menu: NSMenu = appkitObject(handle)
     let item: NSMenuItem = appkitObject(itemHandle)
-    return appkit_try({ menu.addItem(item) }) == nil
+    var added = false
+    guard appkit_try({
+        if let submenu = item.submenu, appkitMenuWouldCycle(submenu, under: menu) {
+            return
+        }
+        menu.addItem(item)
+        added = true
+    }) == nil else {
+        return false
+    }
+    return added
 }
 
 @_cdecl("appkit_menu_insert_item")
@@ -145,10 +167,12 @@ public func appkit_menu_insert_item(
     let item: NSMenuItem = appkitObject(itemHandle)
     var inserted = false
     guard appkit_try({
-        if index <= menu.numberOfItems {
-            menu.insertItem(item, at: index)
-            inserted = true
+        guard index <= menu.numberOfItems else { return }
+        if let submenu = item.submenu, appkitMenuWouldCycle(submenu, under: menu) {
+            return
         }
+        menu.insertItem(item, at: index)
+        inserted = true
     }) == nil else {
         return false
     }
@@ -327,7 +351,17 @@ public func appkit_menu_item_set_submenu(
     guard Thread.isMainThread else { return false }
     let item: NSMenuItem = appkitObject(handle)
     let submenu: NSMenu? = menuHandle.map { appkitObject($0) }
-    return appkit_try({ item.submenu = submenu }) == nil
+    var assigned = false
+    guard appkit_try({
+        if let submenu, appkitMenuWouldCycle(submenu, under: item.menu) {
+            return
+        }
+        item.submenu = submenu
+        assigned = true
+    }) == nil else {
+        return false
+    }
+    return assigned
 }
 
 @_cdecl("appkit_menu_item_enabled")
@@ -555,4 +589,23 @@ public func appkit_menu_item_has_explicit_target(_ handle: UnsafeMutableRawPoint
 @_cdecl("appkit_menu_bytes_free")
 public func appkit_menu_bytes_free(_ bytes: UnsafeMutablePointer<UInt8>?) {
     free(bytes)
+}
+
+@_cdecl("appkit_menu_probe_window_responds_to_item")
+public func appkit_menu_probe_window_responds_to_item(
+    _ windowHandle: UnsafeMutableRawPointer,
+    _ itemHandle: UnsafeMutableRawPointer
+) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let window: NSWindow = appkitObject(windowHandle)
+    let item: NSMenuItem = appkitObject(itemHandle)
+    var responds = false
+    guard appkit_try({
+        if let action = item.action {
+            responds = window.responds(to: action)
+        }
+    }) == nil else {
+        return false
+    }
+    return responds
 }
