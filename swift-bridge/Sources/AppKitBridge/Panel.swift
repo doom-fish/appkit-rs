@@ -49,18 +49,17 @@ private final class AppKitPanelCompletionOwner {
         panelOwners[callback.token] = self
         guard appkit_try({
             panel.begin { [weak self] response in
-                guard let self else { return }
-                if Thread.isMainThread {
-                    self.complete(response)
-                } else {
-                    DispatchQueue.main.async { [self] in self.complete(response) }
-                }
+                self?.nativeResponse(response)
             }
         }) == nil else {
             panelOwners.removeValue(forKey: callback.token)
             return false
         }
         return true
+    }
+
+    func nativeResponse(_ response: NSApplication.ModalResponse) {
+        DispatchQueue.main.async { [self] in complete(response) }
     }
 
     func complete(_ response: NSApplication.ModalResponse) {
@@ -245,10 +244,11 @@ public func appkit_panel_check_completion_after_drop(
         wasHidden = !panel.isVisible
     }
     panelOwners[token] = operation
+    operation.nativeResponse(.cancel)
     guard operation.cancel() else {
         operation.complete(.cancel)
         return false
     }
-    guard appkit_try({ RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03)) }) == nil else { return false }
-    return wasHidden && !operation.panel.isVisible && panelOwners[token] == nil
+    let deferred = panelOwners[token] != nil
+    return wasHidden && deferred && !operation.panel.isVisible
 }

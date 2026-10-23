@@ -20,6 +20,12 @@ pub enum AlertStyle {
     Critical = 2,
 }
 
+#[must_use]
+pub enum AlertSheetStart {
+    ParentMayBeShown(AlertSession),
+    AppKitDidNotStart,
+}
+
 struct AlertCallbackState {
     handler: HandlerSlot<Box<dyn FnMut(Option<usize>)>>,
 }
@@ -89,12 +95,11 @@ impl Alert {
         usize::try_from(index).map_err(|_| AppKitError::InvalidArgument("alert button".into()))
     }
 
-    #[must_use]
     pub fn begin_sheet(
         self,
         window: &Window,
         callback: impl FnOnce(Option<usize>) + 'static,
-    ) -> Option<AlertSession> {
+    ) -> AlertSheetStart {
         let guard = CompletionGuard::new(self.main_thread, AlertCallbackState::new(callback));
         let callbacks = ffi::alert::AlertCallbacksV1 {
             header: CallbackTableHeader {
@@ -116,9 +121,9 @@ impl Alert {
         };
         if !started {
             deactivate_completion(token.get());
-            return None;
+            return AlertSheetStart::AppKitDidNotStart;
         }
-        Some(AlertSession {
+        AlertSheetStart::ParentMayBeShown(AlertSession {
             handle: self.handle,
             token,
             main_thread: self.main_thread,

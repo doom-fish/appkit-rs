@@ -2,73 +2,29 @@ import AppKit
 import AppKitCallbackABI
 import AppKitExceptionShim
 
-private final class AppKitClosedWindowRegistry {
-    private let closed = NSHashTable<NSWindow>.weakObjects()
-    private let closing = NSHashTable<NSWindow>.weakObjects()
-    private var closeObserver: NSObjectProtocol?
-    private var exposeObserver: NSObjectProtocol?
-
-    func ensureInstalled() -> Bool {
-        if closeObserver != nil, exposeObserver != nil { return true }
-        let center = NotificationCenter.default
-        var closeToken: NSObjectProtocol?
-        var exposeToken: NSObjectProtocol?
-        let failure = appkit_try {
-            closeToken = center.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: nil) {
-                [weak self] notification in
-                guard let window = notification.object as? NSWindow else { return }
-                self?.markClosing(window)
-            }
-            exposeToken = center.addObserver(forName: NSWindow.didExposeNotification, object: nil, queue: nil) {
-                [weak self] notification in
-                guard let window = notification.object as? NSWindow else { return }
-                self?.markShown(window)
-            }
-        }
-        guard failure == nil, let closeToken, let exposeToken else {
-            if let closeToken { let _ = appkit_try { center.removeObserver(closeToken) } }
-            if let exposeToken { let _ = appkit_try { center.removeObserver(exposeToken) } }
-            return false
-        }
-        closeObserver = closeToken
-        exposeObserver = exposeToken
-        return true
-    }
-
-    func markClosing(_ window: NSWindow) {
-        let _ = appkit_try {
-            closed.add(window)
-            guard !closing.contains(window) else { return }
-            closing.add(window)
-            DispatchQueue.main.async { [weak self, weak window] in
-                guard let self, let window else { return }
-                let _ = appkit_try { self.closing.remove(window) }
-            }
-        }
-    }
-
-    func markShown(_ window: NSWindow) {
-        let _ = appkit_try {
-            guard !closing.contains(window), window.isVisible else { return }
-            closed.remove(window)
-        }
-    }
-
-    func canBegin(on window: NSWindow) -> Bool {
-        guard !closing.contains(window) else { return false }
-        guard closed.contains(window) else { return true }
-        guard window.isVisible else { return false }
-        closed.remove(window)
-        return true
-    }
-}
-
-private let closedWindows = AppKitClosedWindowRegistry()
 private var alertOwners: [UInt64: AppKitAlertSheetOwner] = [:]
 
 private final class AppKitOffscreenTestWindow: NSWindow {
+    private func offscreen(_ frame: NSRect) -> NSRect {
+        var frame = frame
+        frame.origin = NSPoint(x: -20000, y: -20000)
+        return frame
+    }
+
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
-        frameRect
+        offscreen(frameRect)
+    }
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        super.setFrame(offscreen(frameRect), display: flag)
+    }
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool, animate animateFlag: Bool) {
+        super.setFrame(offscreen(frameRect), display: flag, animate: animateFlag)
+    }
+
+    override func setFrameOrigin(_ point: NSPoint) {
+        super.setFrameOrigin(NSPoint(x: -20000, y: -20000))
     }
 }
 
@@ -82,6 +38,7 @@ private func offscreenTestWindow() -> AppKitOffscreenTestWindow? {
             defer: false
         )
         window?.isReleasedWhenClosed = false
+        window?.alphaValue = 0
         window?.setFrameOrigin(NSPoint(x: -20000, y: -20000))
     }) == nil else { return nil }
     guard let window, isOffscreen(window) else { return nil }
@@ -125,7 +82,7 @@ private final class AppKitAlertSheetOwner {
                 object: parent,
                 queue: nil
             ) { [weak self] _ in
-                _ = self?.abort(parentClosing: true)
+                _ = self?.abort()
             }
         }) == nil, let observer else { return false }
         closeObserver = observer
@@ -134,11 +91,11 @@ private final class AppKitAlertSheetOwner {
     }
 
     func begin() -> Bool {
-        guard let parent else { return false }
-        var available = false
-        guard appkit_try({ available = closedWindows.canBegin(on: parent) }) == nil,
-              available, observeParent() else { return false }
+        guard let parent, observeParent() else { return false }
         guard appkit_try({
+            if parent is AppKitOffscreenTestWindow {
+                alert.window.alphaValue = 0
+            }
             alert.beginSheetModal(for: parent) { [weak self] response in
                 guard let self else { return }
                 let result = Int64(response.rawValue)
@@ -152,13 +109,10 @@ private final class AppKitAlertSheetOwner {
         return true
     }
 
-    func abort(parentClosing: Bool = false) -> Bool {
+    func abort() -> Bool {
         guard Thread.isMainThread else {
-            DispatchQueue.main.async { [self] in _ = abort(parentClosing: parentClosing) }
+            DispatchQueue.main.async { [self] in _ = abort() }
             return true
-        }
-        if parentClosing, let parent {
-            closedWindows.markClosing(parent)
         }
         guard !isEnding else { return false }
         isEnding = true
@@ -190,7 +144,6 @@ private final class AppKitAlertSheetOwner {
 
 @_cdecl("appkit_alert_new")
 public func appkit_alert_new() -> UnsafeMutableRawPointer {
-    _ = closedWindows.ensureInstalled()
     return Unmanaged.passRetained(NSAlert()).toOpaque()
 }
 
@@ -235,15 +188,6 @@ public func appkit_alert_add_button(
     return index
 }
 
-@_cdecl("appkit_alert_can_begin_sheet")
-public func appkit_alert_can_begin_sheet(_ window: UnsafeMutableRawPointer) -> Bool {
-    guard Thread.isMainThread, closedWindows.ensureInstalled() else { return false }
-    let parent: NSWindow = appkitObject(window)
-    var available = false
-    guard appkit_try({ available = closedWindows.canBegin(on: parent) }) == nil else { return false }
-    return available
-}
-
 @_cdecl("appkit_alert_begin_sheet")
 public func appkit_alert_begin_sheet(
     _ handle: UnsafeMutableRawPointer,
@@ -252,7 +196,6 @@ public func appkit_alert_begin_sheet(
     _ callbacks: UnsafePointer<AppKitAlertCallbacksV1>?
 ) -> Bool {
     guard Thread.isMainThread,
-          appkit_alert_can_begin_sheet(window),
           let callbacks = callbacks?.pointee,
           callbacks.header.version == 1,
           callbacks.header.size >= MemoryLayout<AppKitAlertCallbacksV1>.size,
@@ -286,68 +229,84 @@ public func appkit_alert_new_offscreen_test_window() -> UnsafeMutableRawPointer?
     return appkitRetained(offscreenTestWindow())
 }
 
-@_cdecl("appkit_alert_check_offscreen_states")
-public func appkit_alert_check_offscreen_states() -> UInt32 {
-    guard Thread.isMainThread, closedWindows.ensureInstalled(),
-          let first = offscreenTestWindow(),
-          let second = offscreenTestWindow(),
-          let reopened = offscreenTestWindow() else { return 0 }
-    let application = NSApplication.shared
-    let wasHidden = application.isHidden
-    var result: UInt32 = 0
-
-    if appkit_try({ first.orderFront(nil) }) == nil,
-       first.isVisible,
-       isOffscreen(first),
-       closedWindows.canBegin(on: first) {
-        if appkit_try({ first.orderOut(nil) }) == nil,
-           !first.isVisible,
-           closedWindows.canBegin(on: first) {
-            result |= 2
-        }
-        if appkit_try({ first.orderFront(nil) }) == nil,
-           appkit_try({ application.hide(nil) }) == nil,
-           application.isHidden,
-           !first.isVisible,
-           closedWindows.canBegin(on: first) {
-            result |= 1
-        }
-        if !wasHidden {
-            let _ = appkit_try { application.unhideWithoutActivation() }
-        }
-        let tabFailure = appkit_try {
-            first.tabbingMode = .preferred
+@_cdecl("appkit_alert_prepare_offscreen_parent")
+public func appkit_alert_prepare_offscreen_parent(
+    _ window: UnsafeMutableRawPointer,
+    _ companion: UnsafeMutableRawPointer?,
+    _ kind: Int32
+) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let parent: NSWindow = appkitObject(window)
+    guard parent is AppKitOffscreenTestWindow, isOffscreen(parent) else { return false }
+    switch kind {
+    case 0:
+        return !parent.isVisible
+    case 1:
+        return appkit_try({ parent.close() }) == nil && !parent.isVisible
+    case 2:
+        return appkit_try({ parent.orderFront(nil); parent.orderOut(nil) }) == nil
+            && !parent.isVisible && isOffscreen(parent)
+    case 3:
+        return appkit_try({ parent.orderFront(nil); NSApplication.shared.hide(nil) }) == nil
+            && NSApplication.shared.isHidden && !parent.isVisible && isOffscreen(parent)
+    case 4:
+        guard let companion else { return false }
+        let second: NSWindow = appkitObject(companion)
+        guard second is AppKitOffscreenTestWindow, isOffscreen(second) else { return false }
+        let failure = appkit_try {
+            parent.tabbingMode = .preferred
             second.tabbingMode = .preferred
-            first.tabbingIdentifier = "appkit-rs.alert-offscreen"
-            second.tabbingIdentifier = first.tabbingIdentifier
+            parent.tabbingIdentifier = "appkit-rs.alert-offscreen"
+            second.tabbingIdentifier = parent.tabbingIdentifier
+            parent.orderFront(nil)
             second.orderFront(nil)
-            first.addTabbedWindow(second, ordered: .above)
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+            parent.addTabbedWindow(second, ordered: .above)
         }
-        if tabFailure == nil, isOffscreen(first), isOffscreen(second),
-           appkit_try({ first.orderOut(nil) }) == nil,
-           let group = first.tabGroup, group.windows.count == 2,
-           group.selectedWindow === second, !first.isVisible,
-           closedWindows.canBegin(on: first) {
-            result |= 4
-        }
+        guard failure == nil, isOffscreen(parent), isOffscreen(second),
+              let group = parent.tabGroup, group.windows.count == 2 else { return false }
+        return group.selectedWindow === second
+    default:
+        return false
     }
+}
 
-    if appkit_try({ reopened.orderFront(nil) }) == nil, isOffscreen(reopened),
-       appkit_try({ reopened.close() }) == nil, !closedWindows.canBegin(on: reopened),
-       appkit_try({ RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05)) }) == nil,
-       appkit_try({ reopened.orderFront(nil) }) == nil,
-       reopened.isVisible, isOffscreen(reopened), closedWindows.canBegin(on: reopened) {
-        result |= 8
+@_cdecl("appkit_alert_finish_offscreen_sheet")
+public func appkit_alert_finish_offscreen_sheet(_ window: UnsafeMutableRawPointer, _ buttonIndex: Int64) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let parent: NSWindow = appkitObject(window)
+    guard parent is AppKitOffscreenTestWindow, isOffscreen(parent) else { return false }
+    var sheet: NSWindow?
+    for _ in 0..<3 {
+        guard appkit_try({ sheet = parent.attachedSheet }) == nil else { return false }
+        if sheet != nil { break }
+        guard appkit_try({ RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02)) }) == nil else { return false }
     }
+    guard let sheet else { return false }
+    guard isOffscreen(sheet) else {
+        let _ = appkit_try { parent.endSheet(sheet, returnCode: .abort) }
+        return false
+    }
+    return appkit_try({
+        parent.endSheet(sheet, returnCode: NSApplication.ModalResponse(rawValue: Int(buttonIndex)))
+    }) == nil
+}
 
-    let _ = appkit_try { first.close() }
-    let _ = appkit_try { second.close() }
-    let _ = appkit_try { reopened.close() }
-    if !wasHidden, application.isHidden {
-        let _ = appkit_try { application.unhideWithoutActivation() }
-    }
-    return result
+@_cdecl("appkit_alert_run_test_main_queue")
+public func appkit_alert_run_test_main_queue() -> Bool {
+    guard Thread.isMainThread else { return false }
+    return appkit_try({ RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05)) }) == nil
+}
+
+@_cdecl("appkit_alert_close_offscreen_test_window")
+public func appkit_alert_close_offscreen_test_window(_ window: UnsafeMutableRawPointer) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let parent: NSWindow = appkitObject(window)
+    guard parent is AppKitOffscreenTestWindow, isOffscreen(parent) else { return false }
+    let closed = appkit_try { parent.close() } == nil
+    let restored = appkit_try {
+        if NSApplication.shared.isHidden { NSApplication.shared.unhideWithoutActivation() }
+    } == nil
+    return closed && restored
 }
 
 @_cdecl("appkit_alert_check_close_observer")
@@ -366,21 +325,19 @@ public func appkit_alert_check_close_observer(
         return false
     }
     let parent: NSWindow = appkitObject(window)
-    guard appkit_try({
-        parent.setFrameOrigin(NSPoint(x: -20000, y: -20000))
-    }) == nil, isOffscreen(parent) else { return false }
+    guard parent is AppKitOffscreenTestWindow, isOffscreen(parent) else { return false }
     var shown = false
     guard appkit_try({
         parent.orderFront(nil)
         shown = parent.isVisible
-    }) == nil, shown, isOffscreen(parent), appkit_alert_can_begin_sheet(window) else {
+    }) == nil, shown, isOffscreen(parent) else {
         let _ = appkit_try { parent.orderOut(nil) }
         return false
     }
     var alert: NSAlert?
     guard appkit_try({ alert = NSAlert() }) == nil, let alert else { return false }
     let operation = AppKitAlertSheetOwner(alert: alert, parent: parent, callback: callback, callbacks: callbacks)
-    guard operation.observeParent() else { return false }
+    guard operation.begin() else { return false }
     guard appkit_try({ parent.close() }) == nil else {
         _ = operation.abort()
         return false
