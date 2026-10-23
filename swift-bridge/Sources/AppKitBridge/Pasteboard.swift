@@ -1,5 +1,6 @@
 import AppKit
 import AppKitCallbackABI
+import AppKitExceptionShim
 
 private func appkitPasteboardInputString(_ bytes: UnsafePointer<UInt8>?, _ length: Int) -> String? {
     guard length >= 0, length == 0 || bytes != nil else { return nil }
@@ -42,23 +43,31 @@ private func appkitPasteboardOwnedList(_ values: [Data]) -> AppKitPasteboardByte
 
 @_cdecl("appkit_pasteboard_general")
 public func appkit_pasteboard_general() -> UnsafeMutableRawPointer? {
-    appkitRetained(NSPasteboard.general)
+    var pasteboard: NSPasteboard?
+    guard appkit_try({ pasteboard = NSPasteboard.general }) == nil else { return nil }
+    return appkitRetained(pasteboard)
 }
 
 @_cdecl("appkit_pasteboard_find")
 public func appkit_pasteboard_find() -> UnsafeMutableRawPointer? {
-    appkitRetained(NSPasteboard(name: .find))
+    var pasteboard: NSPasteboard?
+    guard appkit_try({ pasteboard = NSPasteboard(name: .find) }) == nil else { return nil }
+    return appkitRetained(pasteboard)
 }
 
 @_cdecl("appkit_pasteboard_unique")
 public func appkit_pasteboard_unique() -> UnsafeMutableRawPointer? {
-    appkitRetained(NSPasteboard.withUniqueName())
+    var pasteboard: NSPasteboard?
+    guard appkit_try({
+        pasteboard = NSPasteboard(name: .init("appkit-rs.unique.\(UUID().uuidString)"))
+    }) == nil else { return nil }
+    return appkitRetained(pasteboard)
 }
 
 @_cdecl("appkit_pasteboard_release_globally")
 public func appkit_pasteboard_release_globally(_ handle: UnsafeMutableRawPointer) {
     let pasteboard: NSPasteboard = appkitObject(handle)
-    pasteboard.releaseGlobally()
+    _ = appkit_try { pasteboard.releaseGlobally() }
 }
 
 @_cdecl("appkit_pasteboard_types")
@@ -67,7 +76,10 @@ public func appkit_pasteboard_types(
     _ out: UnsafeMutablePointer<AppKitPasteboardBytesList>
 ) -> Bool {
     let pasteboard: NSPasteboard = appkitObject(handle)
-    let types = pasteboard.types?.map { Data($0.rawValue.utf8) } ?? []
+    var types: [Data] = []
+    guard appkit_try({
+        types = pasteboard.types?.map { Data($0.rawValue.utf8) } ?? []
+    }) == nil else { return false }
     guard let list = appkitPasteboardOwnedList(types) else { return false }
     out.pointee = list
     return true
@@ -81,8 +93,10 @@ public func appkit_pasteboard_data_for_type(
     _ out: UnsafeMutablePointer<AppKitPasteboardBytes>
 ) -> Bool {
     let pasteboard: NSPasteboard = appkitObject(handle)
+    var data: Data?
     guard let type = appkitPasteboardType(kind, kindLength),
-          let data = pasteboard.data(forType: type),
+          appkit_try({ data = pasteboard.data(forType: type) }) == nil,
+          let data,
           let bytes = appkitPasteboardOwnedBytes(data) else {
         return false
     }
@@ -98,8 +112,10 @@ public func appkit_pasteboard_string_for_type(
     _ out: UnsafeMutablePointer<AppKitPasteboardBytes>
 ) -> Bool {
     let pasteboard: NSPasteboard = appkitObject(handle)
+    var text: String?
     guard let type = appkitPasteboardType(kind, kindLength),
-          let text = pasteboard.string(forType: type),
+          appkit_try({ text = pasteboard.string(forType: type) }) == nil,
+          let text,
           let bytes = appkitPasteboardOwnedBytes(Data(text.utf8)) else {
         return false
     }
@@ -113,9 +129,12 @@ public func appkit_pasteboard_filenames(
     _ out: UnsafeMutablePointer<AppKitPasteboardBytesList>
 ) -> Bool {
     let pasteboard: NSPasteboard = appkitObject(handle)
-    let filenames = pasteboard.propertyList(
-        forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")
-    ) as? [String] ?? []
+    var filenames: [String] = []
+    guard appkit_try({
+        filenames = pasteboard.propertyList(
+            forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")
+        ) as? [String] ?? []
+    }) == nil else { return false }
     let paths = filenames.map { Data($0.utf8) }
     guard let list = appkitPasteboardOwnedList(paths) else { return false }
     out.pointee = list
@@ -125,7 +144,9 @@ public func appkit_pasteboard_filenames(
 @_cdecl("appkit_pasteboard_clear_contents")
 public func appkit_pasteboard_clear_contents(_ handle: UnsafeMutableRawPointer) -> Int64 {
     let pasteboard: NSPasteboard = appkitObject(handle)
-    return Int64(pasteboard.clearContents())
+    var count: Int64 = -1
+    guard appkit_try({ count = Int64(pasteboard.clearContents()) }) == nil else { return -1 }
+    return count
 }
 
 @_cdecl("appkit_pasteboard_declare_types")
@@ -144,7 +165,11 @@ public func appkit_pasteboard_declare_types(
         }
         types.append(type)
     }
-    return Int64(pasteboard.declareTypes(types, owner: nil))
+    var count: Int64 = -1
+    guard appkit_try({ count = Int64(pasteboard.declareTypes(types, owner: nil)) }) == nil else {
+        return -1
+    }
+    return count
 }
 
 @_cdecl("appkit_pasteboard_set_data_for_type")
@@ -160,8 +185,11 @@ public func appkit_pasteboard_set_data_for_type(
           dataLength == 0 || data != nil else {
         return false
     }
-    let bytes = dataLength == 0 ? Data() : Data(bytes: data!, count: dataLength)
-    return pasteboard.setData(bytes, forType: type)
+    var saved = false
+    return appkit_try({
+        let bytes = dataLength == 0 ? Data() : Data(bytes: data!, count: dataLength)
+        saved = pasteboard.setData(bytes, forType: type)
+    }) == nil && saved
 }
 
 @_cdecl("appkit_pasteboard_set_string_for_type")
@@ -177,7 +205,8 @@ public func appkit_pasteboard_set_string_for_type(
           let text = appkitPasteboardInputString(value, valueLength) else {
         return false
     }
-    return pasteboard.setString(text, forType: type)
+    var saved = false
+    return appkit_try({ saved = pasteboard.setString(text, forType: type) }) == nil && saved
 }
 
 @_cdecl("appkit_pasteboard_set_filenames")
@@ -203,16 +232,21 @@ public func appkit_pasteboard_set_filenames(
         }
         filenames.append(filename)
     }
-    return pasteboard.setPropertyList(
-        filenames,
-        forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")
-    )
+    var saved = false
+    return appkit_try({
+        saved = pasteboard.setPropertyList(
+            filenames,
+            forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")
+        )
+    }) == nil && saved
 }
 
 @_cdecl("appkit_pasteboard_change_count")
 public func appkit_pasteboard_change_count(_ handle: UnsafeMutableRawPointer) -> Int64 {
     let pasteboard: NSPasteboard = appkitObject(handle)
-    return Int64(pasteboard.changeCount)
+    var count: Int64 = -1
+    guard appkit_try({ count = Int64(pasteboard.changeCount) }) == nil else { return -1 }
+    return count
 }
 
 @_cdecl("appkit_pasteboard_bytes_free")

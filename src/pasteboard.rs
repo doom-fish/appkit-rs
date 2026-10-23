@@ -256,10 +256,15 @@ impl Drop for Pasteboard {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
     use super::{
-        TYPE_BMP, TYPE_FILE_URL, TYPE_GIF, TYPE_ICO, TYPE_JPEG, TYPE_LEGACY_FILENAMES, TYPE_PNG,
-        TYPE_PNM, TYPE_STRING, TYPE_SVG, TYPE_TIFF, TYPE_WEBP,
+        Pasteboard, TYPE_BMP, TYPE_FILE_URL, TYPE_GIF, TYPE_ICO, TYPE_JPEG, TYPE_LEGACY_FILENAMES,
+        TYPE_PNG, TYPE_PNM, TYPE_STRING, TYPE_SVG, TYPE_TIFF, TYPE_WEBP,
     };
+    use crate::main_thread::MainThreadMarker;
 
     #[test]
     fn type_identifiers_have_distinct_image_values() {
@@ -273,5 +278,58 @@ mod tests {
         assert_eq!(TYPE_STRING, "public.utf8-plain-text");
         assert_eq!(TYPE_FILE_URL, "public.file-url");
         assert_eq!(TYPE_LEGACY_FILENAMES, "NSFilenamesPboardType");
+    }
+
+    #[test]
+    fn unique_pasteboards_keep_contents_isolated_across_threads() {
+        const WORKERS: usize = 8;
+        const ITERATIONS: usize = 100;
+
+        let start = Arc::new(Barrier::new(WORKERS));
+        let workers: Vec<_> = (0..WORKERS)
+            .map(|worker| {
+                let start = Arc::clone(&start);
+                thread::spawn(move || {
+                    start.wait();
+                    for iteration in 0..ITERATIONS {
+                        let main_thread = unsafe { MainThreadMarker::new_unchecked() };
+                        let pasteboard =
+                            Pasteboard::unique(main_thread).expect("a unique pasteboard");
+                        let text = format!("text-{worker}-{iteration}");
+                        let data = format!("data-{worker}-{iteration}").into_bytes();
+                        let path = PathBuf::from(format!("/example/{worker}/{iteration}.txt"));
+
+                        assert_eq!(pasteboard.types(), Vec::<String>::new());
+                        assert!(
+                            pasteboard.declare_types(&[
+                                TYPE_STRING,
+                                TYPE_PNG,
+                                TYPE_LEGACY_FILENAMES
+                            ]) >= 0
+                        );
+                        assert!(pasteboard.set_string_for_type(TYPE_STRING, &text));
+                        assert!(pasteboard.set_data_for_type(TYPE_PNG, &data));
+                        assert!(pasteboard
+                            .set_filenames(std::slice::from_ref(&path))
+                            .expect("valid UTF-8 path"));
+
+                        thread::yield_now();
+                        assert_eq!(
+                            pasteboard.string_for_type(TYPE_STRING).as_deref(),
+                            Some(text.as_str())
+                        );
+                        assert_eq!(
+                            pasteboard.data_for_type(TYPE_PNG).as_deref(),
+                            Some(data.as_slice())
+                        );
+                        assert_eq!(pasteboard.legacy_filenames(), [path]);
+                    }
+                })
+            })
+            .collect();
+
+        for worker in workers {
+            worker.join().expect("the pasteboard worker");
+        }
     }
 }
