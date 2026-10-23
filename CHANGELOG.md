@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ### Added
 
+- Window operations: typed style masks, levels and collection behaviours, geometry and screen conversions, key and visibility state, full screen and simple full screen, sheets, tabs, traffic-light buttons, background, shadow, document state and ordering. Setters return an error for values that AppKit rejects. A sheet completion runs after the caller drops its handle, and closing or ordering out a window aborts its sheet.
 - `Workspace` opens URLs and files, reveals paths in Finder from any thread, reads file and application icons, observes sleep and wake, and registers the app for a URL scheme. A dropped registration handle still delivers its completion.
 - `Application` reads and changes key, main and ordered windows, activation, visibility, presentation options, user attention and the app appearance. Invalid presentation options give an error.
 - `Appearance` converts appearance names, including the four accessibility names that only match, and sets or clears view overrides.
