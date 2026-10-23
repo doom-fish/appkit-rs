@@ -11,6 +11,19 @@ private let appearanceNames: [NSAppearance.Name] = [
     .accessibilityHighContrastVibrantDark,
 ]
 
+private func applyWindowAppearance(_ window: NSWindow, _ appearance: Int32) -> UnsafeMutablePointer<CChar>? {
+    guard appearance == -1 || (0...3).contains(appearance) else {
+        return strdup("the requested appearance is match-only or unknown")
+    }
+    guard appearance >= 0 else {
+        return windowOperationError { window.appearance = nil }
+    }
+    guard let native = NSAppearance(named: appearanceNames[Int(appearance)]) else {
+        return strdup("AppKit cannot load the requested appearance")
+    }
+    return windowOperationError { window.appearance = native }
+}
+
 @_cdecl("appkit_window_new")
 public func appkit_window_new(
     _ x: Double,
@@ -57,11 +70,18 @@ public func appkit_window_ops_effective_appearance(_ handle: UnsafeMutableRawPoi
 @_cdecl("appkit_window_set_appearance")
 public func appkit_window_set_appearance(_ handle: UnsafeMutableRawPointer, _ appearance: Int32) {
     let window: NSWindow = appkitObject(handle)
-    guard appearance >= 0, Int(appearance) < appearanceNames.count else {
-        window.appearance = nil
-        return
+    if let error = applyWindowAppearance(window, appearance) {
+        free(error)
     }
-    window.appearance = NSAppearance(named: appearanceNames[Int(appearance)])
+}
+
+@_cdecl("appkit_window_ops_set_appearance")
+public func appkit_window_ops_set_appearance(
+    _ handle: UnsafeMutableRawPointer,
+    _ appearance: Int32
+) -> UnsafeMutablePointer<CChar>? {
+    let window: NSWindow = appkitObject(handle)
+    return applyWindowAppearance(window, appearance)
 }
 
 @_cdecl("appkit_window_title")

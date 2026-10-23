@@ -1,11 +1,41 @@
+use std::cell::Cell;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 
+use appkit::ffi::window_ops::{
+    appkit_window_ops_probe_closed_simple_full_screen_responder,
+    appkit_window_ops_probe_sheet_completion, SheetCallbackTableV1,
+};
 use appkit::window_ops::{
-    RgbaColor, WindowButton, WindowCollectionBehavior, WindowLevel, WindowStyleMask,
+    RgbaColor, SheetResponse, WindowButton, WindowCollectionBehavior, WindowLevel, WindowStyleMask,
     WindowTabbingMode,
 };
-use appkit::{AppKitError, CGPoint, CGRect, CGSize, MainThreadMarker, Window};
+use appkit::{
+    AppKitError, AppearanceName, CGPoint, CGRect, CGSize, CallbackTableHeader, MainThreadMarker,
+    Window,
+};
+
+thread_local! {
+    static PROBE_RESPONSE: Cell<Option<(u64, i64)>> = const { Cell::new(None) };
+    static PROBE_DEACTIVATED: Cell<u64> = const { Cell::new(0) };
+}
+
+extern "C" fn probe_complete(token: u64, response: i64) {
+    let _ = PROBE_RESPONSE.try_with(|result| result.set(Some((token, response))));
+}
+
+extern "C" fn probe_deactivate(token: u64) {
+    let _ = PROBE_DEACTIVATED.try_with(|result| result.set(token));
+}
+
+static PROBE_CALLBACKS: SheetCallbackTableV1 = SheetCallbackTableV1 {
+    header: CallbackTableHeader {
+        version: 1,
+        size: size_of::<SheetCallbackTableV1>(),
+    },
+    deactivate: probe_deactivate,
+    complete: probe_complete,
+};
 
 fn check_window_properties(window: &Window) -> Result<(), AppKitError> {
     assert!(!window.is_visible());
@@ -99,6 +129,19 @@ fn check_window_properties(window: &Window) -> Result<(), AppKitError> {
 }
 
 fn check_window_chrome_and_document(window: &Window) -> Result<(), AppKitError> {
+    let original_appearance = window.appearance();
+    window.set_appearance(Some(AppearanceName::Aqua))?;
+    for appearance in [
+        AppearanceName::AccessibilityHighContrastAqua,
+        AppearanceName::AccessibilityHighContrastDarkAqua,
+        AppearanceName::AccessibilityHighContrastVibrantLight,
+        AppearanceName::AccessibilityHighContrastVibrantDark,
+    ] {
+        assert!(window.set_appearance(Some(appearance)).is_err());
+        assert_eq!(window.appearance(), Some(AppearanceName::Aqua));
+    }
+    window.set_appearance(original_appearance)?;
+
     window.set_background_color(RgbaColor::new(0.25, 0.5, 0.75, 1.0))?;
     assert!(window.background_color().is_some());
     assert!(window
@@ -170,6 +213,62 @@ fn check_simple_full_screen(main_thread: MainThreadMarker) -> Result<(), AppKitE
     assert_eq!(simple_window.frame(), original_frame);
     assert!(!simple_window.is_visible());
     assert!(!simple_window.is_key_window());
+    assert!(unsafe { appkit_window_ops_probe_closed_simple_full_screen_responder() });
+    Ok(())
+}
+
+fn check_sheet_abort(main_thread: MainThreadMarker) -> Result<(), AppKitError> {
+    enum Stop {
+        ParentClose,
+        SheetClose,
+        SheetOrderOut,
+    }
+
+    for (index, stop) in [Stop::ParentClose, Stop::SheetClose, Stop::SheetOrderOut]
+        .into_iter()
+        .enumerate()
+    {
+        let parent = Window::new(
+            main_thread,
+            CGRect::new(200.0, 200.0, 300.0, 200.0),
+            "Hidden sheet parent",
+        )?;
+        let sheet = Window::new(
+            main_thread,
+            CGRect::new(200.0, 200.0, 240.0, 160.0),
+            "Hidden sheet",
+        )?;
+        let token = (index + 1) as u64;
+        PROBE_RESPONSE.with(|result| result.set(None));
+        PROBE_DEACTIVATED.with(|result| result.set(0));
+        assert!(unsafe {
+            appkit_window_ops_probe_sheet_completion(
+                parent.as_ptr(),
+                sheet.as_ptr(),
+                token,
+                &raw const PROBE_CALLBACKS,
+            )
+        });
+        assert!(!parent.is_visible());
+        assert!(!sheet.is_visible());
+        assert!(!parent.is_key_window());
+        assert!(!sheet.is_key_window());
+
+        match stop {
+            Stop::ParentClose => parent.close(),
+            Stop::SheetClose => sheet.close(),
+            Stop::SheetOrderOut => sheet.order_out(),
+        }
+        assert_eq!(
+            PROBE_RESPONSE.with(Cell::get),
+            Some((token, SheetResponse::Aborted.raw()))
+        );
+        assert_eq!(PROBE_DEACTIVATED.with(Cell::get), token);
+        assert!(!parent.is_visible());
+        assert!(!sheet.is_visible());
+        assert!(!parent.is_key_window());
+        assert!(!sheet.is_key_window());
+    }
     Ok(())
 }
 
@@ -183,6 +282,7 @@ fn main() -> Result<(), AppKitError> {
     check_window_properties(&window)?;
     check_window_chrome_and_document(&window)?;
     check_simple_full_screen(main_thread)?;
+    check_sheet_abort(main_thread)?;
     println!("Window {} stays hidden.", window.window_number());
     Ok(())
 }

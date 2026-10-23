@@ -5,7 +5,7 @@ import ObjectiveC
 
 private let windowCoordinateLimit = Double(Int32.max)
 
-private func windowOperationError(_ action: () -> Void) -> UnsafeMutablePointer<CChar>? {
+func windowOperationError(_ action: () -> Void) -> UnsafeMutablePointer<CChar>? {
     guard let exception = appkit_try(action) else { return nil }
     return strdup(exception as String)
 }
@@ -29,6 +29,7 @@ private func validWindowFrame(_ frame: CGRect) -> Bool {
 }
 
 private var simpleFullScreenKey: UInt8 = 0
+private var sheetCompletionKey: UInt8 = 0
 private var simpleFullScreenCount = 0
 private var savedPresentationOptions: NSApplication.PresentationOptions = []
 
@@ -84,12 +85,38 @@ private func setSimpleFullScreenState(_ state: SimpleFullScreenState?, for windo
     }
 }
 
+private final class SimpleFullScreenResponderProbeWindow: NSWindow {
+    var pretendVisible = false
+    var keyRequests = 0
+    var responderRequests = 0
+    var actualVisible: Bool { super.isVisible }
+
+    override var isVisible: Bool { pretendVisible }
+
+    override func makeKeyAndOrderFront(_ sender: Any?) {
+        keyRequests += 1
+    }
+
+    override func orderFront(_ sender: Any?) {}
+
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        responderRequests += 1
+        return true
+    }
+}
+
 private final class SheetCompletionOwner {
     let token: UInt64
     let table: AppKitWindowSheetCallbackTableV1
+    private weak var parent: NSWindow?
+    private weak var sheet: NSWindow?
+    private var observers: [NSObjectProtocol] = []
     private var completed = false
+    private var ending = false
+    private var aborting = false
+    var started = false
 
-    init?(token: UInt64, table: AppKitWindowSheetCallbackTableV1) {
+    init?(parent: NSWindow, sheet: NSWindow, token: UInt64, table: AppKitWindowSheetCallbackTableV1) {
         guard Thread.isMainThread,
               token != 0,
               table.header.version == 1,
@@ -100,16 +127,92 @@ private final class SheetCompletionOwner {
         }
         self.token = token
         self.table = table
+        self.parent = parent
+        self.sheet = sheet
+
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: parent,
+            queue: nil
+        ) { [weak self] _ in
+            self?.abort()
+        })
+        observers.append(center.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: sheet,
+            queue: nil
+        ) { [weak self] _ in
+            self?.abort()
+        })
     }
 
     func finish(_ response: NSApplication.ModalResponse) {
         guard Thread.isMainThread, !completed else { return }
         completed = true
+        discardObservers()
         table.complete(token, Int64(response.rawValue))
     }
 
+    func end(on window: NSWindow, sheet: NSWindow, response: NSApplication.ModalResponse) -> Bool {
+        guard parent === window, !completed, !ending else { return false }
+        ending = true
+        let ended = appkit_try {
+            window.endSheet(sheet, returnCode: response)
+        } == nil
+        if !ended && !completed {
+            ending = false
+        }
+        return ended
+    }
+
+    func discard() {
+        started = false
+        discardObservers()
+    }
+
+    func abort() {
+        guard started, !completed, !aborting else { return }
+        aborting = true
+        ending = true
+        if let parent, let sheet {
+            _ = appkit_try {
+                parent.endSheet(sheet, returnCode: NSApplication.ModalResponse(rawValue: -1001))
+            }
+        }
+        finish(NSApplication.ModalResponse(rawValue: -1001))
+    }
+
+    private func discardObservers() {
+        let current = observers
+        observers.removeAll()
+        let center = NotificationCenter.default
+        for observer in current {
+            center.removeObserver(observer)
+        }
+        if let sheet, sheetCompletionOwner(for: sheet) === self {
+            setSheetCompletionOwner(nil, for: sheet)
+        }
+    }
+
     deinit {
+        discardObservers()
+        if started && !completed && Thread.isMainThread {
+            table.complete(token, -1001)
+        }
         table.deactivate(token)
+    }
+}
+
+private func sheetCompletionOwner(for sheet: NSWindow) -> SheetCompletionOwner? {
+    withUnsafePointer(to: &sheetCompletionKey) {
+        objc_getAssociatedObject(sheet, $0) as? SheetCompletionOwner
+    }
+}
+
+private func setSheetCompletionOwner(_ owner: SheetCompletionOwner?, for sheet: NSWindow) {
+    withUnsafePointer(to: &sheetCompletionKey) {
+        objc_setAssociatedObject(sheet, $0, owner, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     }
 }
 
@@ -360,6 +463,43 @@ public func appkit_window_ops_is_simple_full_screen(_ handle: UnsafeMutableRawPo
     return simpleFullScreenState(for: window) != nil
 }
 
+@_cdecl("appkit_window_ops_probe_closed_simple_full_screen_responder")
+public func appkit_window_ops_probe_closed_simple_full_screen_responder() -> Bool {
+    guard Thread.isMainThread else { return false }
+    let window = SimpleFullScreenResponderProbeWindow(
+        contentRect: CGRect(x: 200, y: 200, width: 280, height: 190),
+        styleMask: [.titled, .closable],
+        backing: .buffered,
+        defer: false
+    )
+    window.isReleasedWhenClosed = false
+    guard let contentView = window.contentView else { return false }
+    let view = NSView(frame: contentView.bounds)
+    contentView.addSubview(view)
+    let originalFrame = window.frame
+    let originalStyle = window.styleMask
+    let handle = Unmanaged.passUnretained(window).toOpaque()
+    let viewHandle = Unmanaged.passUnretained(view).toOpaque()
+    guard appkit_window_ops_toggle_simple_full_screen(handle, viewHandle) else { return false }
+    guard !window.actualVisible, !window.isKeyWindow else { return false }
+    window.close()
+    guard let saved = simpleFullScreenState(for: window), saved.closed else { return false }
+
+    let keyRequests = window.keyRequests
+    let responderRequests = window.responderRequests
+    window.pretendVisible = true
+    let restored = appkit_window_ops_toggle_simple_full_screen(handle, viewHandle)
+    window.pretendVisible = false
+    return restored
+        && window.keyRequests == keyRequests + 1
+        && window.responderRequests == responderRequests + 1
+        && window.styleMask == originalStyle
+        && window.frame == originalFrame
+        && simpleFullScreenState(for: window) == nil
+        && !window.actualVisible
+        && !window.isKeyWindow
+}
+
 @_cdecl("appkit_window_ops_toggle_simple_full_screen")
 public func appkit_window_ops_toggle_simple_full_screen(
     _ handle: UnsafeMutableRawPointer,
@@ -382,7 +522,7 @@ public func appkit_window_ops_toggle_simple_full_screen(
             saved.transitioning = false
             return false
         }
-        if !saved.closed && wasVisible {
+        if wasVisible {
             _ = appkit_try {
                 window.makeKeyAndOrderFront(nil)
                 _ = window.makeFirstResponder(view)
@@ -445,18 +585,47 @@ public func appkit_window_ops_begin_sheet(
 ) -> Bool {
     let window: NSWindow = appkitObject(handle)
     let sheet: NSWindow = appkitObject(sheetHandle)
-    guard Thread.isMainThread, window !== sheet, sheet.sheetParent == nil else { return false }
+    guard Thread.isMainThread, window !== sheet, sheet.sheetParent == nil,
+          sheetCompletionOwner(for: sheet) == nil else {
+        return false
+    }
     if token == 0 && table == nil {
         return appkit_try { window.beginSheet(sheet) } == nil
     }
-    guard let table, let owner = SheetCompletionOwner(token: token, table: table.pointee) else {
+    guard let table,
+          let owner = SheetCompletionOwner(parent: window, sheet: sheet, token: token, table: table.pointee) else {
         return false
     }
-    return appkit_try {
+    setSheetCompletionOwner(owner, for: sheet)
+    owner.started = true
+    let begun = appkit_try {
         window.beginSheet(sheet) { response in
             owner.finish(response)
         }
     } == nil
+    if !begun {
+        owner.discard()
+    }
+    return begun
+}
+
+@_cdecl("appkit_window_ops_probe_sheet_completion")
+public func appkit_window_ops_probe_sheet_completion(
+    _ handle: UnsafeMutableRawPointer,
+    _ sheetHandle: UnsafeMutableRawPointer,
+    _ token: UInt64,
+    _ table: UnsafePointer<AppKitWindowSheetCallbackTableV1>?
+) -> Bool {
+    let window: NSWindow = appkitObject(handle)
+    let sheet: NSWindow = appkitObject(sheetHandle)
+    guard let table,
+          let owner = SheetCompletionOwner(parent: window, sheet: sheet, token: token, table: table.pointee),
+          sheetCompletionOwner(for: sheet) == nil else {
+        return false
+    }
+    setSheetCompletionOwner(owner, for: sheet)
+    owner.started = true
+    return true
 }
 
 @_cdecl("appkit_window_ops_end_sheet")
@@ -467,9 +636,13 @@ public func appkit_window_ops_end_sheet(
 ) -> Bool {
     let window: NSWindow = appkitObject(handle)
     let sheet: NSWindow = appkitObject(sheetHandle)
+    let result = NSApplication.ModalResponse(rawValue: Int(response))
+    if let owner = sheetCompletionOwner(for: sheet) {
+        return owner.end(on: window, sheet: sheet, response: result)
+    }
     guard sheet.sheetParent === window else { return false }
     return appkit_try {
-        window.endSheet(sheet, returnCode: NSApplication.ModalResponse(rawValue: Int(response)))
+        window.endSheet(sheet, returnCode: result)
     } == nil
 }
 
@@ -876,7 +1049,8 @@ public func appkit_window_ops_set_represented_filename(
 @_cdecl("appkit_window_ops_order_out")
 public func appkit_window_ops_order_out(_ handle: UnsafeMutableRawPointer) {
     let window: NSWindow = appkitObject(handle)
-    window.orderOut(nil)
+    sheetCompletionOwner(for: window)?.abort()
+    _ = appkit_try { window.orderOut(nil) }
 }
 
 @_cdecl("appkit_window_ops_order_back")

@@ -11,6 +11,7 @@ use crate::object::Handle;
 use crate::screen::Screen;
 use crate::util::{c_string, read_rect, take_string};
 use crate::view::View;
+use crate::window_ops::check_window_operation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TitleVisibility {
@@ -159,13 +160,26 @@ impl Window {
         AppearanceName::from_raw(unsafe { ffi::appkit_window_appearance(self.as_ptr()) })
     }
 
-    pub fn set_appearance(&self, appearance: Option<AppearanceName>) {
-        unsafe {
-            ffi::appkit_window_set_appearance(
+    pub fn set_appearance(&self, appearance: Option<AppearanceName>) -> Result<(), AppKitError> {
+        if matches!(
+            appearance,
+            Some(
+                AppearanceName::AccessibilityHighContrastAqua
+                    | AppearanceName::AccessibilityHighContrastDarkAqua
+                    | AppearanceName::AccessibilityHighContrastVibrantLight
+                    | AppearanceName::AccessibilityHighContrastVibrantDark
+            )
+        ) {
+            return Err(AppKitError::InvalidArgument(
+                "high-contrast appearances are match-only".to_owned(),
+            ));
+        }
+        check_window_operation(unsafe {
+            ffi::window_ops::appkit_window_ops_set_appearance(
                 self.as_ptr(),
                 appearance.map_or(-1, AppearanceName::raw),
-            );
-        };
+            )
+        })
     }
 
     #[must_use]

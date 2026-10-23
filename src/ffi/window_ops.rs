@@ -13,6 +13,7 @@ pub struct SheetCallbackTableV1 {
 }
 
 extern "C" {
+    pub fn appkit_window_ops_set_appearance(window: *mut c_void, appearance: i32) -> *mut c_char;
     pub fn appkit_window_ops_style_mask(window: *mut c_void) -> u64;
     pub fn appkit_window_ops_set_style_mask(window: *mut c_void, mask: u64) -> *mut c_char;
     pub fn appkit_window_ops_level(window: *mut c_void) -> i64;
@@ -82,11 +83,20 @@ extern "C" {
     pub fn appkit_window_ops_zoom(window: *mut c_void);
     pub fn appkit_window_ops_toggle_full_screen(window: *mut c_void);
     pub fn appkit_window_ops_is_simple_full_screen(window: *mut c_void) -> bool;
+    #[doc(hidden)]
+    pub fn appkit_window_ops_probe_closed_simple_full_screen_responder() -> bool;
     pub fn appkit_window_ops_toggle_simple_full_screen(
         window: *mut c_void,
         view: *mut c_void,
     ) -> bool;
     pub fn appkit_window_ops_begin_sheet(
+        window: *mut c_void,
+        sheet: *mut c_void,
+        token: u64,
+        table: *const SheetCallbackTableV1,
+    ) -> bool;
+    #[doc(hidden)]
+    pub fn appkit_window_ops_probe_sheet_completion(
         window: *mut c_void,
         sheet: *mut c_void,
         token: u64,

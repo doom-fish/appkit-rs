@@ -243,7 +243,7 @@ impl RgbaColor {
     }
 }
 
-fn check_window_operation(error: *mut c_char) -> Result<(), AppKitError> {
+pub(crate) fn check_window_operation(error: *mut c_char) -> Result<(), AppKitError> {
     unsafe { take_string(error) }
         .map_or(Ok(()), |message| Err(AppKitError::InvalidArgument(message)))
 }
@@ -1021,6 +1021,31 @@ mod tests {
         );
         deliver_sheet_completion(token, SheetResponse::Cancel, main_thread);
         assert_eq!(received.get(), Some(SheetResponse::Ok));
+    }
+
+    #[test]
+    fn aborted_sheet_releases_captured_state_after_handle_drop() {
+        let main_thread = unsafe { MainThreadMarker::new_unchecked() };
+        let captured = Rc::new(());
+        let weak = Rc::downgrade(&captured);
+        let received = Rc::new(Cell::new(None));
+        let result = Rc::clone(&received);
+        let completion = register_sheet_completion(
+            main_thread,
+            Box::new(move |response| {
+                let _ = Rc::strong_count(&captured);
+                result.set(Some(response));
+            }),
+        );
+        let token = completion.token;
+        drop(completion);
+
+        assert!(weak.upgrade().is_some());
+        deliver_sheet_completion(token, SheetResponse::Aborted, main_thread);
+        assert_eq!(received.get(), Some(SheetResponse::Aborted));
+        assert!(weak.upgrade().is_none());
+        assert_eq!(Rc::strong_count(&received), 1);
+        assert!(!release_sheet_completion(token));
     }
 
     #[test]
