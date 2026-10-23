@@ -45,6 +45,15 @@ public func appkit_window_appearance(_ handle: UnsafeMutableRawPointer) -> Int32
     return Int32(index)
 }
 
+@_cdecl("appkit_window_ops_effective_appearance")
+public func appkit_window_ops_effective_appearance(_ handle: UnsafeMutableRawPointer) -> Int32 {
+    let window: NSWindow = appkitObject(handle)
+    guard let index = appearanceNames.firstIndex(of: window.effectiveAppearance.name) else {
+        return -1
+    }
+    return Int32(index)
+}
+
 @_cdecl("appkit_window_set_appearance")
 public func appkit_window_set_appearance(_ handle: UnsafeMutableRawPointer, _ appearance: Int32) {
     let window: NSWindow = appkitObject(handle)

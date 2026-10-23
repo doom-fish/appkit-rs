@@ -16,6 +16,7 @@ use crate::view::View;
 pub enum TitleVisibility {
     Visible,
     Hidden,
+    Unknown(i64),
 }
 
 impl TitleVisibility {
@@ -23,14 +24,15 @@ impl TitleVisibility {
         match self {
             Self::Visible => 0,
             Self::Hidden => 1,
+            Self::Unknown(value) => value,
         }
     }
 
     const fn from_raw(raw: i64) -> Self {
-        if raw == 1 {
-            Self::Hidden
-        } else {
-            Self::Visible
+        match raw {
+            0 => Self::Visible,
+            1 => Self::Hidden,
+            _ => Self::Unknown(raw),
         }
     }
 }
@@ -41,6 +43,7 @@ pub enum TitlebarSeparatorStyle {
     None,
     Line,
     Shadow,
+    Unknown(i64),
 }
 
 impl TitlebarSeparatorStyle {
@@ -50,6 +53,7 @@ impl TitlebarSeparatorStyle {
             Self::None => 1,
             Self::Line => 2,
             Self::Shadow => 3,
+            Self::Unknown(value) => value,
         }
     }
 
@@ -58,7 +62,8 @@ impl TitlebarSeparatorStyle {
             1 => Self::None,
             2 => Self::Line,
             3 => Self::Shadow,
-            _ => Self::Automatic,
+            0 => Self::Automatic,
+            _ => Self::Unknown(raw),
         }
     }
 }
@@ -70,6 +75,7 @@ pub enum AnimationBehavior {
     DocumentWindow,
     UtilityWindow,
     AlertPanel,
+    Unknown(i64),
 }
 
 impl AnimationBehavior {
@@ -80,6 +86,7 @@ impl AnimationBehavior {
             Self::DocumentWindow => 3,
             Self::UtilityWindow => 4,
             Self::AlertPanel => 5,
+            Self::Unknown(value) => value,
         }
     }
 
@@ -89,7 +96,8 @@ impl AnimationBehavior {
             3 => Self::DocumentWindow,
             4 => Self::UtilityWindow,
             5 => Self::AlertPanel,
-            _ => Self::Default,
+            0 => Self::Default,
+            _ => Self::Unknown(raw),
         }
     }
 }
@@ -100,7 +108,11 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(_main_thread: MainThreadMarker, content_rect: CGRect, title: &str) -> Result<Self, AppKitError> {
+    pub fn new(
+        _main_thread: MainThreadMarker,
+        content_rect: CGRect,
+        title: &str,
+    ) -> Result<Self, AppKitError> {
         let title = c_string(title)?;
         let window = unsafe {
             ffi::appkit_window_new(
@@ -118,7 +130,10 @@ impl Window {
     }
 
     #[must_use]
-    pub unsafe fn from_raw_borrowed(window: NonNull<c_void>, _main_thread: MainThreadMarker) -> Self {
+    pub unsafe fn from_raw_borrowed(
+        window: NonNull<c_void>,
+        _main_thread: MainThreadMarker,
+    ) -> Self {
         Self {
             handle: unsafe { Handle::retain(window) },
         }
@@ -135,7 +150,8 @@ impl Window {
 
     #[must_use]
     pub fn content_view(&self) -> Option<View> {
-        unsafe { Handle::from_retained(ffi::appkit_window_content_view(self.as_ptr())) }.map(View::from_handle)
+        unsafe { Handle::from_retained(ffi::appkit_window_content_view(self.as_ptr())) }
+            .map(View::from_handle)
     }
 
     #[must_use]
@@ -144,7 +160,12 @@ impl Window {
     }
 
     pub fn set_appearance(&self, appearance: Option<AppearanceName>) {
-        unsafe { ffi::appkit_window_set_appearance(self.as_ptr(), appearance.map_or(-1, AppearanceName::raw)) };
+        unsafe {
+            ffi::appkit_window_set_appearance(
+                self.as_ptr(),
+                appearance.map_or(-1, AppearanceName::raw),
+            );
+        };
     }
 
     #[must_use]
@@ -169,7 +190,9 @@ impl Window {
 
     #[must_use]
     pub fn titlebar_separator_style(&self) -> TitlebarSeparatorStyle {
-        TitlebarSeparatorStyle::from_raw(unsafe { ffi::appkit_window_titlebar_separator_style(self.as_ptr()) })
+        TitlebarSeparatorStyle::from_raw(unsafe {
+            ffi::appkit_window_titlebar_separator_style(self.as_ptr())
+        })
     }
 
     pub fn set_titlebar_separator_style(&self, style: TitlebarSeparatorStyle) {
@@ -193,7 +216,8 @@ impl Window {
 
     #[must_use]
     pub fn screen(&self) -> Option<Screen> {
-        unsafe { Handle::from_retained(ffi::appkit_window_screen(self.as_ptr())) }.map(Screen::from_handle)
+        unsafe { Handle::from_retained(ffi::appkit_window_screen(self.as_ptr())) }
+            .map(Screen::from_handle)
     }
 
     #[must_use]
