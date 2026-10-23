@@ -1,8 +1,21 @@
 # COVERAGE
 
 - Framework: `AppKit.framework`
-- Scope: this release makes titled windows, covers windows and views that other code makes, runs the event loop, and covers screens, the shared application, images, the scroller style and the accessibility display settings. It does not make views or menus.
+- Scope: The released API makes titled windows and runs the event loop. It gives access to views, screens, the shared application, images, the scroller style, and display settings.
+- Unreleased scope: The callback ABI adds tokens, borrowed events, text bytes, and UTF-16 ranges. It does not make hosted views or menus.
 - Legend: `✅` implemented, `⏭️` not implemented
+
+## Callback ABI (unreleased)
+
+| Contract | Status | Rust surface | Notes |
+| --- | --- | --- | --- |
+| Main-thread tokens and weak state handles | ✅ | `RegistrationToken`, `CallbackRegistration<T>` | A late callback gets no state. |
+| Swift owner and versioned callback table | ✅ | `CallbackState`, `NativeCallbackRegistration<T>`, `CallbackTableV1` | Drop deactivates the token before Swift releases the owner. |
+| Re-entrant `FnMut` handler | ✅ | `HandlerSlot<H>` | A recursive call gets `None`. A new handler replaces the old handler. |
+| Synchronous `NSEvent` borrow | ✅ | `EventRef<'_>`, `Event` | Retain the event before you store it. |
+| `NSRange` and UTF-16 offsets | ✅ | `Utf16Range` | `INVALID` represents `NSNotFound`. |
+| UTF-8 pointer and length | ✅ | `copy_utf8`, `dispatch_text` | Rust copies the bytes before it calls the handler. |
+| Hosted view and window callbacks | ⏭️ |  | The later domain modules provide these objects. |
 
 ## NSView
 

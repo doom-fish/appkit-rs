@@ -2,6 +2,25 @@ use core::ffi::{c_char, c_void};
 
 use apple_cf::cg::{CGRect, CGSize};
 
+pub mod alert;
+pub mod appearance;
+pub mod application;
+pub mod application_host;
+pub mod blur;
+pub mod callbacks;
+pub mod cursor;
+pub mod drag;
+pub mod event;
+pub mod host_view;
+pub mod host_window;
+pub mod menu;
+pub mod panel;
+pub mod pasteboard;
+pub mod text_input;
+pub mod window_ops;
+pub mod window_state;
+pub mod workspace;
+
 extern "C" {
     pub fn appkit_retain(object: *mut c_void);
     pub fn appkit_release(object: *mut c_void);
@@ -14,7 +33,13 @@ extern "C" {
     pub fn appkit_view_wants_layer(view: *mut c_void) -> bool;
     pub fn appkit_view_set_wants_layer(view: *mut c_void, wants: bool);
 
-    pub fn appkit_window_new(x: f64, y: f64, width: f64, height: f64, title: *const c_char) -> *mut c_void;
+    pub fn appkit_window_new(
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        title: *const c_char,
+    ) -> *mut c_void;
     pub fn appkit_window_content_view(window: *mut c_void) -> *mut c_void;
     pub fn appkit_window_appearance(window: *mut c_void) -> i32;
     pub fn appkit_window_set_appearance(window: *mut c_void, appearance: i32);
@@ -47,7 +72,10 @@ extern "C" {
     pub fn appkit_screen_localized_name(screen: *mut c_void) -> *mut c_char;
 
     pub fn appkit_application_shared() -> *mut c_void;
-    pub fn appkit_application_set_application_icon_image(application: *mut c_void, image: *mut c_void);
+    pub fn appkit_application_set_application_icon_image(
+        application: *mut c_void,
+        image: *mut c_void,
+    );
     pub fn appkit_application_set_activation_policy(application: *mut c_void, policy: i64) -> bool;
     pub fn appkit_application_activate(application: *mut c_void);
     pub fn appkit_application_run(application: *mut c_void);

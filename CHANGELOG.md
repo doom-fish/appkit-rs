@@ -4,6 +4,19 @@ This file records the important changes to `appkit-rs`.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- The main-thread callback registry uses numeric tokens and weak state handles.
+- Version 1 callback tables connect the Swift owner to borrowed events and copied UTF-8 text.
+- `EventRef<'_>`, retained `Event`, `Utf16Range`, and `HandlerSlot` define the callback lifetime and re-entrant handler rules.
+- Rust callback dispatch contains panics and gives a safe result for a late callback.
+
+### Changed
+
+- The Swift bridge requires macOS 12.0 or later.
+
 ## [0.1.1] - 2026-10-23
 
 ### Added

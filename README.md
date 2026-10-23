@@ -2,7 +2,7 @@
 
 Safe Rust bindings for Apple's [AppKit](https://developer.apple.com/documentation/appkit) framework on macOS. This release makes windows, gives access to windows and views that other code makes, runs the event loop, and gives access to screens, the shared application, images and the accessibility settings of the display.
 
-The crate requires macOS 11 or later.
+The crate requires macOS 12.0 or later.
 
 ## Quick start
 
@@ -83,9 +83,39 @@ fn main() -> Result<(), AppKitError> {
 - `Application::run` returns only after a call to `-stop:`. `Application::terminate` ends the process.
 - `Window::as_ptr` gives the `NSWindow` pointer for other libraries, for example an accessibility adapter.
 
+## Callbacks and lifetime
+
+`CallbackRegistration::new(main_thread, state)` assigns a numeric token to a main-thread `Rc<T>` state.
+The registry keeps a weak state handle. Swift keeps only the token and a copy of `CallbackTableV1`.
+`CallbackRegistration::snapshot(token, main_thread)` gets a strong state handle before the callback runs.
+Implement `CallbackState` for a host state, and pass its `Rc` to `NativeCallbackRegistration::new`.
+Drop the registration to deactivate the token.
+`NativeCallbackRegistration<T>` deactivates the token before it releases its Swift owner.
+Stop frame delivery and detach other owners before you release a hosted view or window.
+
+Each `CallbackTableV1` has a version and a byte size.
+Its `event` callback receives a borrowed `NSEvent` pointer for one synchronous call.
+`EventRef<'_>` keeps that borrow in Rust. Use `EventRef::retain` to keep an owned `Event`.
+Its `text` callback receives UTF-8 bytes as a pointer and a length.
+`dispatch_text` copies those bytes before it calls the handler. The pointer expires when the callback returns.
+Use `HandlerSlot::replace` and `HandlerSlot::invoke` for each `FnMut` handler.
+`invoke` removes the handler during the call and restores it only if no replacement enters the slot.
+A recursive call returns `None`. Use a safe value for a synchronous query.
+`dispatch_event` and `dispatch_text` reject inactive tokens and calls outside the main thread, and contain Rust panics.
+
+`Utf16Range` counts UTF-16 code units. `Utf16Range::INVALID` represents `NSNotFound`.
+Use `from_utf8_range` and `to_utf8_range` to convert Rust byte ranges at character boundaries.
+`EventRef::from_raw_borrowed` needs a live `NSEvent` for the full borrow.
+`copy_utf8` and `dispatch_text` need a readable byte buffer of the specified length.
+The C callbacks must use the dispatch functions before they call Rust handlers.
+
 ## Raw functions
 
-The `ffi` module declares the functions of the Swift bridge. An object pointer that a bridge function returns has a retain count that the caller owns, except the pointer from `appkit_view_layer`. Use `ffi::appkit_release` to release an object. Use `ffi::appkit_string_free` to release a string.
+The `ffi` module declares the Swift bridge functions.
+The caller owns each object pointer that a bridge function returns, except for the pointer from `appkit_view_layer`.
+Use `ffi::appkit_release` to release an owned object.
+Use `ffi::appkit_string_free` to release a string.
+The callback table uses the C types in `AppKitCallbackABI.h`.
 
 ## Examples
 
@@ -93,7 +123,10 @@ The `ffi` module declares the functions of the Swift bridge. An object pointer t
 cargo run --example 01_accessibility
 cargo run --example 02_screens
 cargo run --example 03_window
+cargo run --example 04_callbacks
 ```
+
+`04_callbacks` checks callback ownership without a window.
 
 ## License
 
