@@ -7,8 +7,8 @@ use appkit::ffi::window_ops::{
     appkit_window_ops_probe_sheet_completion, SheetCallbackTableV1,
 };
 use appkit::window_ops::{
-    RgbaColor, SheetResponse, WindowButton, WindowCollectionBehavior, WindowLevel, WindowStyleMask,
-    WindowTabbingMode,
+    RgbaColor, SheetResponse, WindowButton, WindowCollectionBehavior, WindowLevel,
+    WindowOrderingMode, WindowStyleMask, WindowTabbingMode,
 };
 use appkit::{
     AppKitError, AppearanceName, CGPoint, CGRect, CGSize, CallbackTableHeader, MainThreadMarker,
@@ -222,11 +222,17 @@ fn check_sheet_abort(main_thread: MainThreadMarker) -> Result<(), AppKitError> {
         ParentClose,
         SheetClose,
         SheetOrderOut,
+        SheetOrderWindowOut,
     }
 
-    for (index, stop) in [Stop::ParentClose, Stop::SheetClose, Stop::SheetOrderOut]
-        .into_iter()
-        .enumerate()
+    for (index, stop) in [
+        Stop::ParentClose,
+        Stop::SheetClose,
+        Stop::SheetOrderOut,
+        Stop::SheetOrderWindowOut,
+    ]
+    .into_iter()
+    .enumerate()
     {
         let parent = Window::new(
             main_thread,
@@ -258,6 +264,7 @@ fn check_sheet_abort(main_thread: MainThreadMarker) -> Result<(), AppKitError> {
             Stop::ParentClose => parent.close(),
             Stop::SheetClose => sheet.close(),
             Stop::SheetOrderOut => sheet.order_out(),
+            Stop::SheetOrderWindowOut => sheet.order_window(WindowOrderingMode::Out, 0)?,
         }
         assert_eq!(
             PROBE_RESPONSE.with(Cell::get),

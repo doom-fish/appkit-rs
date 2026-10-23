@@ -1069,6 +1069,9 @@ public func appkit_window_ops_order_window(
     guard let mode = NSWindow.OrderingMode(rawValue: Int(ordered)) else {
         return strdup("the window order is invalid")
     }
+    if mode == .out {
+        sheetCompletionOwner(for: window)?.abort()
+    }
     return windowOperationError {
         window.order(mode, relativeTo: Int(relativeTo))
     }
