@@ -5,6 +5,7 @@ final class HostedWindowDelegate: NSObject, NSWindowDelegate {
     let token: UInt64
     private let table: AppKitHostWindowCallbackTableV1
     private var active = true
+    private var registered = true
 
     init?(token: UInt64, table: AppKitHostWindowCallbackTableV1) {
         guard Thread.isMainThread,
@@ -25,9 +26,18 @@ final class HostedWindowDelegate: NSObject, NSWindowDelegate {
     }
 
     func deactivate() {
-        guard active else { return }
+        guard registered else { return }
+        registered = false
         active = false
         table.deactivate?(token)
+    }
+
+    func suspend() {
+        active = false
+    }
+
+    func resume() {
+        active = registered
     }
 
     @discardableResult
@@ -125,14 +135,26 @@ extension HostedWindowOwner where Self: NSWindow {
         callbackDelegate = nil
     }
 
+    func suspendAfterClose() {
+        callbackDelegate?.suspend()
+        delegate = nil
+    }
+
+    func resumeForOrder(_ place: NSWindow.OrderingMode) {
+        guard place != .out, !isClosing, delegate == nil, let callback = callbackDelegate else { return }
+        callback.resume()
+        delegate = callback
+    }
+
     func hostedClose(_ close: () -> Void) {
         guard !isClosing else { return }
         isClosing = true
-        let window: NSWindow = self
-        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_CLOSE))
-        close()
-        detach()
-        withExtendedLifetime(window) {}
+        withExtendedLifetime(self) {
+            defer { isClosing = false }
+            callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_CLOSE))
+            close()
+            suspendAfterClose()
+        }
     }
 
     func hostedAccessory(_ controller: NSTitlebarAccessoryViewController, add: () -> Void) {
@@ -158,6 +180,11 @@ class HostedWindow: NSWindow, HostedWindowOwner {
 
     override func close() {
         hostedClose { super.close() }
+    }
+
+    override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        resumeForOrder(place)
+        super.order(place, relativeTo: otherWin)
     }
 
     override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
@@ -202,6 +229,11 @@ class HostedPanel: NSPanel, HostedWindowOwner {
 
     override func close() {
         hostedClose { super.close() }
+    }
+
+    override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        resumeForOrder(place)
+        super.order(place, relativeTo: otherWin)
     }
 
     override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
@@ -337,15 +369,33 @@ public func appkit_host_window_can_become_key(_ handle: UnsafeMutableRawPointer)
 public func appkit_host_window_verify_should_close(_ handle: UnsafeMutableRawPointer) -> Int8 {
     guard Thread.isMainThread else { return -1 }
     let window: NSWindow = appkitObject(handle)
-    guard let callback = (window as? (NSWindow & HostedWindowOwner))?.callbackDelegate else { return -1 }
+    guard let callback = window.delegate as? HostedWindowDelegate else { return -1 }
     return callback.windowShouldClose(window) ? 1 : 0
+}
+
+@_cdecl("appkit_host_window_verify_hidden_reshow")
+public func appkit_host_window_verify_hidden_reshow(_ handle: UnsafeMutableRawPointer) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let window: NSWindow = appkitObject(handle)
+    guard !window.isVisible else { return false }
+    let alpha = window.alphaValue
+    let ignoresMouseEvents = window.ignoresMouseEvents
+    window.alphaValue = 0
+    window.ignoresMouseEvents = true
+    window.orderBack(nil)
+    let shown = window.isVisible
+    window.close()
+    let hidden = !window.isVisible
+    window.alphaValue = alpha
+    window.ignoresMouseEvents = ignoresMouseEvents
+    return shown && hidden
 }
 
 @_cdecl("appkit_host_window_verify_event")
 public func appkit_host_window_verify_event(_ handle: UnsafeMutableRawPointer, _ kind: UInt32) -> Bool {
     guard Thread.isMainThread else { return false }
     let window: NSWindow = appkitObject(handle)
-    guard let callback = (window as? (NSWindow & HostedWindowOwner))?.callbackDelegate else { return false }
+    guard let callback = window.delegate as? HostedWindowDelegate else { return false }
     let notification = Notification(name: NSWindow.didMoveNotification, object: window)
     switch kind {
     case UInt32(APPKIT_HOST_WINDOW_EVENT_WILL_CLOSE):

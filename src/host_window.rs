@@ -389,6 +389,12 @@ impl HostedWindow {
 
     #[doc(hidden)]
     #[must_use]
+    pub fn verify_hidden_reshow(&self) -> bool {
+        unsafe { ffi::appkit_host_window_verify_hidden_reshow(self.handle.as_ptr()) }
+    }
+
+    #[doc(hidden)]
+    #[must_use]
     pub fn verify_event(&self, event: HostedWindowEvent) -> bool {
         unsafe { ffi::appkit_host_window_verify_event(self.handle.as_ptr(), event as u32) }
     }

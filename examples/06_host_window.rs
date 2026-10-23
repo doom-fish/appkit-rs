@@ -10,6 +10,8 @@ fn main() {
     let main_thread = MainThreadMarker::new().expect("the main thread");
     exercise_window(main_thread);
     exercise_panel(main_thread);
+    exercise_self_close(main_thread);
+    exercise_hidden_reshow(main_thread);
     println!("The hidden window and panel stop callbacks after close.");
 }
 
@@ -120,4 +122,70 @@ fn exercise_panel(main_thread: MainThreadMarker) {
     drop(panel);
     native_panel.close();
     assert_eq!(panel_calls.get(), 1);
+}
+
+fn exercise_self_close(main_thread: MainThreadMarker) {
+    let configuration = HostedWindowConfiguration::new(
+        CGRect::new(0.0, 0.0, 180.0, 100.0),
+        WindowStyleMask::TITLED | WindowStyleMask::CLOSABLE,
+    );
+    let host = HostedWindow::new(main_thread, configuration).expect("a hidden hosted window");
+    let native = host.as_window();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    host.set_handler(move |event| {
+        observed.borrow_mut().push(event);
+        if event == HostedWindowEvent::DidResize {
+            native.close();
+        }
+    });
+    assert!(host.verify_event(HostedWindowEvent::DidResize));
+    assert_eq!(
+        *events.borrow(),
+        [
+            HostedWindowEvent::DidResize,
+            HostedWindowEvent::Close,
+            HostedWindowEvent::WillClose
+        ]
+    );
+    assert!(!host.verify_event(HostedWindowEvent::DidMove));
+}
+
+fn exercise_hidden_reshow(main_thread: MainThreadMarker) {
+    let configuration = HostedWindowConfiguration::new(
+        CGRect::new(-10_000.0, -10_000.0, 180.0, 100.0),
+        WindowStyleMask::TITLED | WindowStyleMask::CLOSABLE,
+    );
+    let host = HostedWindow::new(main_thread, configuration).expect("a hidden hosted window");
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    host.set_handler(move |event| observed.borrow_mut().push(event));
+    host.as_window().close();
+    assert_eq!(
+        *events.borrow(),
+        [HostedWindowEvent::Close, HostedWindowEvent::WillClose]
+    );
+    assert_eq!(host.verify_should_close(), None);
+    assert!(host.verify_hidden_reshow());
+    let close_events: Vec<_> = events
+        .borrow()
+        .iter()
+        .copied()
+        .filter(|event| {
+            matches!(
+                event,
+                HostedWindowEvent::Close | HostedWindowEvent::WillClose
+            )
+        })
+        .collect();
+    assert_eq!(
+        close_events,
+        [
+            HostedWindowEvent::Close,
+            HostedWindowEvent::WillClose,
+            HostedWindowEvent::Close,
+            HostedWindowEvent::WillClose
+        ]
+    );
+    assert_eq!(host.verify_should_close(), None);
 }

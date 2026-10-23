@@ -50,5 +50,6 @@ extern "C" {
     pub fn appkit_host_window_can_become_main(window: *mut c_void) -> bool;
     pub fn appkit_host_window_can_become_key(window: *mut c_void) -> bool;
     pub fn appkit_host_window_verify_should_close(window: *mut c_void) -> i8;
+    pub fn appkit_host_window_verify_hidden_reshow(window: *mut c_void) -> bool;
     pub fn appkit_host_window_verify_event(window: *mut c_void, event: u32) -> bool;
 }
