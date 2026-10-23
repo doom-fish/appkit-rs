@@ -3,11 +3,12 @@ import AppKitCallbackABI
 
 private func appkitPasteboardInputString(_ bytes: UnsafePointer<UInt8>?, _ length: Int) -> String? {
     guard length >= 0, length == 0 || bytes != nil else { return nil }
-    return String(decoding: UnsafeBufferPointer(start: bytes, count: length), as: UTF8.self)
+    return String(bytes: UnsafeBufferPointer(start: bytes, count: length), encoding: .utf8)
 }
 
 private func appkitPasteboardType(_ bytes: UnsafePointer<UInt8>?, _ length: Int) -> NSPasteboard.PasteboardType? {
-    guard let name = appkitPasteboardInputString(bytes, length), !name.isEmpty else { return nil }
+    guard let name = appkitPasteboardInputString(bytes, length),
+          !name.isEmpty, !name.utf8.contains(0) else { return nil }
     return NSPasteboard.PasteboardType(name)
 }
 
@@ -115,10 +116,7 @@ public func appkit_pasteboard_filenames(
     let filenames = pasteboard.propertyList(
         forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")
     ) as? [String] ?? []
-    let paths = filenames.map { path in
-        let bytes = (path as NSString).fileSystemRepresentation
-        return Data(bytes: bytes, count: Int(strlen(bytes)))
-    }
+    let paths = filenames.map { Data($0.utf8) }
     guard let list = appkitPasteboardOwnedList(paths) else { return false }
     out.pointee = list
     return true
@@ -195,11 +193,13 @@ public func appkit_pasteboard_set_filenames(
     for index in 0..<count {
         let path = paths[index]
         guard path.length > 0, let bytes = path.bytes,
-              !UnsafeBufferPointer(start: bytes, count: path.length).contains(0) else {
+              !UnsafeBufferPointer(start: bytes, count: path.length).contains(0),
+              let filename = String(
+                  bytes: UnsafeBufferPointer(start: bytes, count: path.length),
+                  encoding: .utf8
+              ),
+              !filename.isEmpty else {
             return false
-        }
-        let filename = bytes.withMemoryRebound(to: CChar.self, capacity: path.length) {
-            FileManager.default.string(withFileSystemRepresentation: $0, length: path.length)
         }
         filenames.append(filename)
     }

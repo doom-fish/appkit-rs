@@ -1,3 +1,5 @@
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
 use appkit::pasteboard::{Pasteboard, TYPE_LEGACY_FILENAMES, TYPE_PNG, TYPE_STRING};
@@ -27,15 +29,33 @@ fn main() {
         PathBuf::from("/example/file name.txt"),
         PathBuf::from("/example/café.png"),
     ];
-    assert!(pasteboard.set_filenames(&paths));
-    assert_eq!(
-        pasteboard.legacy_filenames(),
-        [
-            PathBuf::from("/example/file name.txt"),
-            PathBuf::from("/example/cafe\u{301}.png")
-        ]
-    );
+    assert!(pasteboard.set_filenames(&paths).expect("valid UTF-8 paths"));
+    assert_eq!(pasteboard.legacy_filenames(), paths);
 
+    let paths_change = pasteboard.change_count();
+    let invalid_path = PathBuf::from(OsString::from_vec(b"/example/\xff.png".to_vec()));
+    assert!(pasteboard
+        .set_filenames(&[paths[0].clone(), invalid_path])
+        .is_err());
+    assert!(pasteboard.set_filenames(&[PathBuf::new()]).is_err());
+    assert!(pasteboard
+        .set_filenames(&[PathBuf::from("/example/part\0name")])
+        .is_err());
+    assert_eq!(pasteboard.change_count(), paths_change);
+    assert_eq!(pasteboard.legacy_filenames(), paths);
+
+    let empty_filename_list = br#"<plist version="1.0"><array><string></string></array></plist>"#;
+    assert!(pasteboard.set_data_for_type(TYPE_LEGACY_FILENAMES, empty_filename_list));
+    assert_eq!(pasteboard.legacy_filenames(), [PathBuf::new()]);
+    assert!(pasteboard.set_data_for_type(TYPE_LEGACY_FILENAMES, b"not a property list"));
+    assert_eq!(pasteboard.legacy_filenames(), Vec::<PathBuf>::new());
+    let valid_type_change = pasteboard.change_count();
+    assert!(!pasteboard.set_string_for_type("bad\0type", "value"));
+    assert_eq!(pasteboard.declare_types(&[""]), -1);
+    assert_eq!(pasteboard.change_count(), valid_type_change);
+
+    assert!(pasteboard.set_string_for_type(TYPE_STRING, ""));
+    assert_eq!(pasteboard.string_for_type(TYPE_STRING).as_deref(), Some(""));
     assert!(pasteboard.set_string_for_type(TYPE_STRING, "café\0text"));
     assert_eq!(
         pasteboard.string_for_type(TYPE_STRING).as_deref(),

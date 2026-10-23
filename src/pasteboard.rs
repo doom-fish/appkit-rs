@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 
+use crate::error::AppKitError;
 use crate::ffi::pasteboard as ffi;
 use crate::main_thread::MainThreadMarker;
 use crate::object::Handle;
@@ -201,19 +202,31 @@ impl Pasteboard {
         }
     }
 
-    #[must_use]
-    pub fn set_filenames(&self, paths: &[PathBuf]) -> bool {
+    pub fn set_filenames(&self, paths: &[PathBuf]) -> Result<bool, AppKitError> {
         let inputs: Vec<_> = paths
             .iter()
-            .map(|path| path.as_os_str().as_bytes())
-            .map(|bytes| ffi::AppKitPasteboardInput {
-                bytes: bytes.as_ptr(),
-                length: bytes.len(),
+            .map(|path| {
+                let bytes = path.as_os_str().as_bytes();
+                if bytes.is_empty() {
+                    return Err(AppKitError::InvalidArgument("a file path is empty".into()));
+                }
+                if bytes.contains(&0) {
+                    return Err(AppKitError::InvalidArgument(
+                        "a file path contains a null byte".into(),
+                    ));
+                }
+                std::str::from_utf8(bytes).map_err(|_| {
+                    AppKitError::InvalidArgument("a file path is not valid UTF-8".into())
+                })?;
+                Ok(ffi::AppKitPasteboardInput {
+                    bytes: bytes.as_ptr(),
+                    length: bytes.len(),
+                })
             })
-            .collect();
-        unsafe {
+            .collect::<Result<_, _>>()?;
+        Ok(unsafe {
             ffi::appkit_pasteboard_set_filenames(self.as_ptr(), inputs.as_ptr(), inputs.len())
-        }
+        })
     }
 
     #[must_use]
