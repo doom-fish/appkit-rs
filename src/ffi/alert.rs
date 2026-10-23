@@ -27,6 +27,8 @@ extern "C" {
     ) -> bool;
     pub fn appkit_alert_can_begin_sheet(window: *mut c_void) -> bool;
     pub fn appkit_alert_cancel(token: u64) -> bool;
+    pub fn appkit_alert_new_offscreen_test_window() -> *mut c_void;
+    pub fn appkit_alert_check_offscreen_states() -> u32;
     pub fn appkit_alert_check_close_observer(
         window: *mut c_void,
         token: u64,

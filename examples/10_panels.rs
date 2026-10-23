@@ -1,3 +1,4 @@
+use core::ptr::NonNull;
 use std::cell::Cell;
 use std::env;
 use std::ffi::OsStr;
@@ -10,17 +11,29 @@ use appkit::ffi::alert::AlertCallbacksV1;
 use appkit::ffi::panel::PanelCallbacksV1;
 use appkit::panel::{OpenPanel, SavePanel};
 use appkit::{
-    AppKitError, CGRect, CallbackRegistration, CallbackTableHeader, CallbackTableV1,
-    MainThreadMarker, RegistrationToken, Window,
+    AppKitError, CallbackRegistration, CallbackTableHeader, CallbackTableV1, MainThreadMarker,
+    RegistrationToken, Window,
 };
 use doom_fish_utils::panic_safe::catch_user_panic_result;
+
+struct CloseResult {
+    parent: Window,
+    response: Cell<i64>,
+    follow_up_started: Cell<Option<bool>>,
+}
 
 extern "C" fn record_alert_abort(raw_token: u64, response: i64) {
     let _ = catch_user_panic_result("hidden alert close", || {
         let main_thread = MainThreadMarker::new()?;
         let token = RegistrationToken::from_raw(raw_token)?;
-        let received = CallbackRegistration::<Cell<i64>>::snapshot(token, main_thread)?;
-        received.set(response);
+        let result = CallbackRegistration::<CloseResult>::snapshot(token, main_thread)?;
+        result.response.set(response);
+        let follow_up = Alert::new(main_thread);
+        let next = follow_up.begin_sheet(&result.parent, |_| {});
+        result.follow_up_started.set(Some(next.is_some()));
+        if let Some(next) = next {
+            let _ = next.cancel();
+        }
         Some(())
     });
 }
@@ -98,14 +111,23 @@ fn main() -> Result<(), AppKitError> {
     });
     assert_eq!(panel_received.get(), 1);
 
-    let parent = Window::new(
-        main_thread,
-        CGRect::new(-20000.0, -20000.0, 80.0, 80.0),
-        "Hidden parent",
-    )?;
-    assert!(!unsafe { appkit::ffi::alert::appkit_alert_can_begin_sheet(parent.as_ptr()) });
+    let visibility = unsafe { appkit::ffi::alert::appkit_alert_check_offscreen_states() };
+    assert_ne!(visibility & 1, 0, "the hidden application");
+    assert_ne!(visibility & 2, 0, "the ordered-out window");
+    assert_ne!(visibility & 4, 0, "the background tab");
+    assert_ne!(visibility & 8, 0, "the reopened window");
 
-    let received = Rc::new(Cell::new(0_i64));
+    let native = unsafe { appkit::ffi::alert::appkit_alert_new_offscreen_test_window() };
+    let native = NonNull::new(native).expect("an off-screen parent window");
+    let parent = unsafe { Window::from_raw_borrowed(native, main_thread) };
+    unsafe { appkit::ffi::appkit_release(native.as_ptr()) };
+    assert!(unsafe { appkit::ffi::alert::appkit_alert_can_begin_sheet(parent.as_ptr()) });
+
+    let received = Rc::new(CloseResult {
+        parent: parent.clone(),
+        response: Cell::new(0),
+        follow_up_started: Cell::new(None),
+    });
     let registration = CallbackRegistration::new(main_thread, Rc::clone(&received));
     let callbacks = AlertCallbacksV1 {
         header: CallbackTableHeader {
@@ -122,7 +144,8 @@ fn main() -> Result<(), AppKitError> {
             &raw const callbacks,
         )
     });
-    assert_eq!(received.get(), -1001);
+    assert_eq!(received.response.get(), -1001);
+    assert_eq!(received.follow_up_started.get(), Some(false));
     assert!(!unsafe { appkit::ffi::alert::appkit_alert_can_begin_sheet(parent.as_ptr()) });
 
     println!("The open panel, save panel, and alert are configured but not visible.");
