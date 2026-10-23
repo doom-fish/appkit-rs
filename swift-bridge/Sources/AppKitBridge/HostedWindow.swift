@@ -1,0 +1,391 @@
+import AppKit
+import AppKitCallbackABI
+
+final class HostedWindowDelegate: NSObject, NSWindowDelegate {
+    let token: UInt64
+    private let table: AppKitHostWindowCallbackTableV1
+    private var active = true
+
+    init?(token: UInt64, table: AppKitHostWindowCallbackTableV1) {
+        guard Thread.isMainThread,
+              token != 0,
+              table.header.version == 1,
+              table.header.size >= MemoryLayout<AppKitHostWindowCallbackTableV1>.size,
+              table.deactivate != nil,
+              table.should_close != nil,
+              table.event != nil else {
+            return nil
+        }
+        self.token = token
+        self.table = table
+    }
+
+    deinit {
+        deactivate()
+    }
+
+    func deactivate() {
+        guard active else { return }
+        active = false
+        table.deactivate?(token)
+    }
+
+    @discardableResult
+    func event(_ kind: UInt32) -> Bool {
+        guard Thread.isMainThread, active, let callback = table.event else { return false }
+        withExtendedLifetime(self) {
+            callback(token, kind)
+        }
+        return true
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard Thread.isMainThread, active else { return false }
+        return withExtendedLifetime(self) {
+            table.should_close?(token) ?? false
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_WILL_CLOSE))
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_RESIZE))
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_MOVE))
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_CHANGE_SCREEN))
+    }
+
+    func windowDidChangeBackingProperties(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_CHANGE_BACKING_PROPERTIES))
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_BECOME_KEY))
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_RESIGN_KEY))
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_CHANGE_OCCLUSION_STATE))
+    }
+
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_WILL_ENTER_FULL_SCREEN))
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_ENTER_FULL_SCREEN))
+    }
+
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_FAIL_TO_ENTER_FULL_SCREEN))
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_WILL_EXIT_FULL_SCREEN))
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_EXIT_FULL_SCREEN))
+    }
+
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        event(UInt32(APPKIT_HOST_WINDOW_EVENT_DID_FAIL_TO_EXIT_FULL_SCREEN))
+    }
+}
+
+protocol HostedWindowOwner: AnyObject {
+    var callbackDelegate: HostedWindowDelegate? { get set }
+    var allowsMainWindow: Bool { get set }
+    var allowsKeyWindow: Bool { get set }
+    var isClosing: Bool { get set }
+}
+
+extension HostedWindowOwner where Self: NSWindow {
+    func attach(_ callback: HostedWindowDelegate, configuration: AppKitHostedWindowConfiguration) {
+        allowsMainWindow = configuration.can_become_main
+        allowsKeyWindow = configuration.can_become_key
+        isReleasedWhenClosed = false
+        callbackDelegate = callback
+        delegate = callback
+    }
+
+    func detach() {
+        callbackDelegate?.deactivate()
+        delegate = nil
+        callbackDelegate = nil
+    }
+
+    func hostedClose(_ close: () -> Void) {
+        guard !isClosing else { return }
+        isClosing = true
+        let window: NSWindow = self
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_CLOSE))
+        close()
+        detach()
+        withExtendedLifetime(window) {}
+    }
+
+    func hostedAccessory(_ controller: NSTitlebarAccessoryViewController, add: () -> Void) {
+        add()
+        let accessory = controller.view
+        accessory.isHidden = true
+        var frame = accessory.frame
+        frame.size.height = 0
+        accessory.frame = frame
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_ADDED_TITLEBAR_ACCESSORY))
+    }
+}
+
+@objc(DFHostedWindow)
+class HostedWindow: NSWindow, HostedWindowOwner {
+    var callbackDelegate: HostedWindowDelegate?
+    var allowsMainWindow = true
+    var allowsKeyWindow = true
+    var isClosing = false
+
+    override var canBecomeMain: Bool { allowsMainWindow }
+    override var canBecomeKey: Bool { allowsKeyWindow }
+
+    override func close() {
+        hostedClose { super.close() }
+    }
+
+    override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
+        hostedAccessory(childViewController) {
+            super.addTitlebarAccessoryViewController(childViewController)
+        }
+    }
+
+    override func moveTabToNewWindow(_ sender: Any?) {
+        super.moveTabToNewWindow(sender)
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_MOVE_TAB_TO_NEW_WINDOW))
+    }
+
+    override func mergeAllWindows(_ sender: Any?) {
+        super.mergeAllWindows(sender)
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_MERGE_ALL_WINDOWS))
+    }
+
+    override func selectNextTab(_ sender: Any?) {
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_SELECT_NEXT_TAB))
+    }
+
+    override func selectPreviousTab(_ sender: Any?) {
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_SELECT_PREVIOUS_TAB))
+    }
+
+    override func toggleTabBar(_ sender: Any?) {
+        super.toggleTabBar(sender)
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_TOGGLE_TAB_BAR))
+    }
+}
+
+@objc(DFHostedPanel)
+class HostedPanel: NSPanel, HostedWindowOwner {
+    var callbackDelegate: HostedWindowDelegate?
+    var allowsMainWindow = true
+    var allowsKeyWindow = true
+    var isClosing = false
+
+    override var canBecomeMain: Bool { allowsMainWindow }
+    override var canBecomeKey: Bool { allowsKeyWindow }
+
+    override func close() {
+        hostedClose { super.close() }
+    }
+
+    override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
+        hostedAccessory(childViewController) {
+            super.addTitlebarAccessoryViewController(childViewController)
+        }
+    }
+
+    override func moveTabToNewWindow(_ sender: Any?) {
+        super.moveTabToNewWindow(sender)
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_MOVE_TAB_TO_NEW_WINDOW))
+    }
+
+    override func mergeAllWindows(_ sender: Any?) {
+        super.mergeAllWindows(sender)
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_MERGE_ALL_WINDOWS))
+    }
+
+    override func selectNextTab(_ sender: Any?) {
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_SELECT_NEXT_TAB))
+    }
+
+    override func selectPreviousTab(_ sender: Any?) {
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_SELECT_PREVIOUS_TAB))
+    }
+
+    override func toggleTabBar(_ sender: Any?) {
+        super.toggleTabBar(sender)
+        callbackDelegate?.event(UInt32(APPKIT_HOST_WINDOW_EVENT_TOGGLE_TAB_BAR))
+    }
+}
+
+private func createHostedWindow<T: NSWindow & HostedWindowOwner>(
+    _ configuration: AppKitHostedWindowConfiguration,
+    token: UInt64,
+    table: AppKitHostWindowCallbackTableV1,
+    make: (NSRect, NSWindow.StyleMask, NSWindow.BackingStoreType, Bool, NSScreen?) -> T
+) -> T? {
+    guard Thread.isMainThread,
+          let callback = HostedWindowDelegate(token: token, table: table),
+          let backing = NSWindow.BackingStoreType(rawValue: UInt(configuration.backing_store)) else {
+        return nil
+    }
+    let screen: NSScreen? = configuration.screen.map { appkitObject($0) }
+    let window = make(
+        NSRect(x: configuration.x, y: configuration.y, width: configuration.width, height: configuration.height),
+        NSWindow.StyleMask(rawValue: UInt(configuration.style_mask)),
+        backing,
+        configuration.defer_creation,
+        screen
+    )
+    window.attach(callback, configuration: configuration)
+    return window
+}
+
+@_cdecl("appkit_host_window_new")
+public func appkit_host_window_new(
+    _ configuration: UnsafePointer<AppKitHostedWindowConfiguration>?,
+    _ token: UInt64,
+    _ table: UnsafePointer<AppKitHostWindowCallbackTableV1>?
+) -> UnsafeMutableRawPointer? {
+    guard let configuration, let table else { return nil }
+    let window: HostedWindow? = createHostedWindow(configuration.pointee, token: token, table: table.pointee) {
+        HostedWindow(contentRect: $0, styleMask: $1, backing: $2, defer: $3, screen: $4)
+    }
+    return window.map { Unmanaged.passRetained($0).toOpaque() }
+}
+
+@_cdecl("appkit_host_panel_new")
+public func appkit_host_panel_new(
+    _ configuration: UnsafePointer<AppKitHostedWindowConfiguration>?,
+    _ options: UnsafePointer<AppKitHostedPanelOptions>?,
+    _ token: UInt64,
+    _ table: UnsafePointer<AppKitHostWindowCallbackTableV1>?
+) -> UnsafeMutableRawPointer? {
+    guard let configuration, let options, let table else { return nil }
+    let panel: HostedPanel? = createHostedWindow(configuration.pointee, token: token, table: table.pointee) {
+        HostedPanel(contentRect: $0, styleMask: $1, backing: $2, defer: $3, screen: $4)
+    }
+    guard let panel else { return nil }
+    let settings = options.pointee
+    if settings.is_floating_panel >= 0 {
+        panel.isFloatingPanel = settings.is_floating_panel != 0
+    }
+    if settings.becomes_key_only_if_needed >= 0 {
+        panel.becomesKeyOnlyIfNeeded = settings.becomes_key_only_if_needed != 0
+    }
+    if settings.works_when_modal >= 0 {
+        panel.worksWhenModal = settings.works_when_modal != 0
+    }
+    if settings.hides_on_deactivate >= 0 {
+        panel.hidesOnDeactivate = settings.hides_on_deactivate != 0
+    }
+    return Unmanaged.passRetained(panel).toOpaque()
+}
+
+@_cdecl("appkit_host_window_detach")
+public func appkit_host_window_detach(_ handle: UnsafeMutableRawPointer) {
+    guard Thread.isMainThread else { return }
+    let window: NSWindow = appkitObject(handle)
+    (window as? (NSWindow & HostedWindowOwner))?.detach()
+}
+
+@_cdecl("appkit_host_window_set_can_become_main")
+public func appkit_host_window_set_can_become_main(_ handle: UnsafeMutableRawPointer, _ enabled: Bool) {
+    guard Thread.isMainThread else { return }
+    let window: NSWindow = appkitObject(handle)
+    (window as? (NSWindow & HostedWindowOwner))?.allowsMainWindow = enabled
+}
+
+@_cdecl("appkit_host_window_set_can_become_key")
+public func appkit_host_window_set_can_become_key(_ handle: UnsafeMutableRawPointer, _ enabled: Bool) {
+    guard Thread.isMainThread else { return }
+    let window: NSWindow = appkitObject(handle)
+    (window as? (NSWindow & HostedWindowOwner))?.allowsKeyWindow = enabled
+}
+
+@_cdecl("appkit_host_window_can_become_main")
+public func appkit_host_window_can_become_main(_ handle: UnsafeMutableRawPointer) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let window: NSWindow = appkitObject(handle)
+    return window.canBecomeMain
+}
+
+@_cdecl("appkit_host_window_can_become_key")
+public func appkit_host_window_can_become_key(_ handle: UnsafeMutableRawPointer) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let window: NSWindow = appkitObject(handle)
+    return window.canBecomeKey
+}
+
+@_cdecl("appkit_host_window_verify_should_close")
+public func appkit_host_window_verify_should_close(_ handle: UnsafeMutableRawPointer) -> Int8 {
+    guard Thread.isMainThread else { return -1 }
+    let window: NSWindow = appkitObject(handle)
+    guard let callback = (window as? (NSWindow & HostedWindowOwner))?.callbackDelegate else { return -1 }
+    return callback.windowShouldClose(window) ? 1 : 0
+}
+
+@_cdecl("appkit_host_window_verify_event")
+public func appkit_host_window_verify_event(_ handle: UnsafeMutableRawPointer, _ kind: UInt32) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let window: NSWindow = appkitObject(handle)
+    guard let callback = (window as? (NSWindow & HostedWindowOwner))?.callbackDelegate else { return false }
+    let notification = Notification(name: NSWindow.didMoveNotification, object: window)
+    switch kind {
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_WILL_CLOSE):
+        callback.windowWillClose(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_RESIZE):
+        callback.windowDidResize(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_MOVE):
+        callback.windowDidMove(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_CHANGE_SCREEN):
+        callback.windowDidChangeScreen(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_CHANGE_BACKING_PROPERTIES):
+        callback.windowDidChangeBackingProperties(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_BECOME_KEY):
+        callback.windowDidBecomeKey(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_RESIGN_KEY):
+        callback.windowDidResignKey(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_CHANGE_OCCLUSION_STATE):
+        callback.windowDidChangeOcclusionState(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_WILL_ENTER_FULL_SCREEN):
+        callback.windowWillEnterFullScreen(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_ENTER_FULL_SCREEN):
+        callback.windowDidEnterFullScreen(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_FAIL_TO_ENTER_FULL_SCREEN):
+        callback.windowDidFailToEnterFullScreen(window)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_WILL_EXIT_FULL_SCREEN):
+        callback.windowWillExitFullScreen(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_EXIT_FULL_SCREEN):
+        callback.windowDidExitFullScreen(notification)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_DID_FAIL_TO_EXIT_FULL_SCREEN):
+        callback.windowDidFailToExitFullScreen(window)
+    case UInt32(APPKIT_HOST_WINDOW_EVENT_CLOSE),
+         UInt32(APPKIT_HOST_WINDOW_EVENT_ADDED_TITLEBAR_ACCESSORY),
+         UInt32(APPKIT_HOST_WINDOW_EVENT_MOVE_TAB_TO_NEW_WINDOW),
+         UInt32(APPKIT_HOST_WINDOW_EVENT_MERGE_ALL_WINDOWS),
+         UInt32(APPKIT_HOST_WINDOW_EVENT_SELECT_NEXT_TAB),
+         UInt32(APPKIT_HOST_WINDOW_EVENT_SELECT_PREVIOUS_TAB),
+         UInt32(APPKIT_HOST_WINDOW_EVENT_TOGGLE_TAB_BAR):
+        return callback.event(kind)
+    default:
+        return false
+    }
+    return true
+}
