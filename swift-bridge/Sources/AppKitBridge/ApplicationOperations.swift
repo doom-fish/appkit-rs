@@ -95,9 +95,6 @@ private func appkitValidPresentationOptions(_ options: NSApplication.Presentatio
     if menuIsHidden && !dockIsHidden {
         return false
     }
-    if menuAutoHides && !(dockIsHidden || dockAutoHides) {
-        return false
-    }
     let requiresDock: NSApplication.PresentationOptions = [
         .disableProcessSwitching,
         .disableForceQuit,

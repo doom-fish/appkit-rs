@@ -83,9 +83,6 @@ impl PresentationOptions {
         if self.0 & Self::HIDE_MENU_BAR.0 != 0 && dock != Self::HIDE_DOCK.0 {
             return false;
         }
-        if self.0 & Self::AUTO_HIDE_MENU_BAR.0 != 0 && dock == 0 {
-            return false;
-        }
         if self.0 & requires_dock != 0 && dock == 0 {
             return false;
         }
@@ -328,6 +325,8 @@ mod tests {
         let valid = [
             PresentationOptions::NONE,
             PresentationOptions::AUTO_HIDE_DOCK,
+            PresentationOptions::AUTO_HIDE_MENU_BAR,
+            PresentationOptions::AUTO_HIDE_MENU_BAR | PresentationOptions::DISABLE_APPLE_MENU,
             PresentationOptions::AUTO_HIDE_DOCK | PresentationOptions::AUTO_HIDE_MENU_BAR,
             PresentationOptions::HIDE_DOCK | PresentationOptions::HIDE_MENU_BAR,
             PresentationOptions::HIDE_DOCK | PresentationOptions::DISABLE_PROCESS_SWITCHING,
@@ -343,7 +342,6 @@ mod tests {
                 | PresentationOptions::HIDE_MENU_BAR,
             PresentationOptions::HIDE_MENU_BAR,
             PresentationOptions::AUTO_HIDE_DOCK | PresentationOptions::HIDE_MENU_BAR,
-            PresentationOptions::AUTO_HIDE_MENU_BAR,
             PresentationOptions::DISABLE_PROCESS_SWITCHING,
             PresentationOptions::DISABLE_FORCE_QUIT,
             PresentationOptions::DISABLE_SESSION_TERMINATION,
