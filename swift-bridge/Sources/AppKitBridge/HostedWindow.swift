@@ -6,6 +6,7 @@ final class HostedWindowDelegate: NSObject, NSWindowDelegate {
     private let table: AppKitHostWindowCallbackTableV1
     private var active = true
     private var registered = true
+    private weak var window: NSWindow?
 
     init?(token: UInt64, table: AppKitHostWindowCallbackTableV1) {
         guard Thread.isMainThread,
@@ -36,13 +37,28 @@ final class HostedWindowDelegate: NSObject, NSWindowDelegate {
         active = false
     }
 
-    func resume() {
-        active = registered
+    func attach(to window: NSWindow) {
+        self.window = window
+    }
+
+    func resumeIfShown() {
+        guard registered, !active, let window,
+              !((window as? HostedWindowOwner)?.isClosing ?? false),
+              window.isVisible || window.isKeyWindow else {
+            return
+        }
+        active = true
+    }
+
+    var acceptsCallbacks: Bool {
+        guard Thread.isMainThread, registered else { return false }
+        resumeIfShown()
+        return active
     }
 
     @discardableResult
     func event(_ kind: UInt32) -> Bool {
-        guard Thread.isMainThread, active, let callback = table.event else { return false }
+        guard acceptsCallbacks, let callback = table.event else { return false }
         withExtendedLifetime(self) {
             callback(token, kind)
         }
@@ -50,7 +66,7 @@ final class HostedWindowDelegate: NSObject, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard Thread.isMainThread, active else { return false }
+        guard acceptsCallbacks else { return false }
         return withExtendedLifetime(self) {
             table.should_close?(token) ?? false
         }
@@ -125,6 +141,7 @@ extension HostedWindowOwner where Self: NSWindow {
         allowsMainWindow = configuration.can_become_main
         allowsKeyWindow = configuration.can_become_key
         isReleasedWhenClosed = false
+        callback.attach(to: self)
         callbackDelegate = callback
         delegate = callback
     }
@@ -137,13 +154,11 @@ extension HostedWindowOwner where Self: NSWindow {
 
     func suspendAfterClose() {
         callbackDelegate?.suspend()
-        delegate = nil
     }
 
     func resumeForOrder(_ place: NSWindow.OrderingMode) {
-        guard place != .out, !isClosing, delegate == nil, let callback = callbackDelegate else { return }
-        callback.resume()
-        delegate = callback
+        guard place != .out else { return }
+        callbackDelegate?.resumeIfShown()
     }
 
     func hostedClose(_ close: () -> Void) {
@@ -183,8 +198,18 @@ class HostedWindow: NSWindow, HostedWindowOwner {
     }
 
     override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
-        resumeForOrder(place)
         super.order(place, relativeTo: otherWin)
+        resumeForOrder(place)
+    }
+
+    override func orderFrontRegardless() {
+        super.orderFrontRegardless()
+        callbackDelegate?.resumeIfShown()
+    }
+
+    override func becomeKey() {
+        super.becomeKey()
+        callbackDelegate?.resumeIfShown()
     }
 
     override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
@@ -232,8 +257,18 @@ class HostedPanel: NSPanel, HostedWindowOwner {
     }
 
     override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
-        resumeForOrder(place)
         super.order(place, relativeTo: otherWin)
+        resumeForOrder(place)
+    }
+
+    override func orderFrontRegardless() {
+        super.orderFrontRegardless()
+        callbackDelegate?.resumeIfShown()
+    }
+
+    override func becomeKey() {
+        super.becomeKey()
+        callbackDelegate?.resumeIfShown()
     }
 
     override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
@@ -369,7 +404,7 @@ public func appkit_host_window_can_become_key(_ handle: UnsafeMutableRawPointer)
 public func appkit_host_window_verify_should_close(_ handle: UnsafeMutableRawPointer) -> Int8 {
     guard Thread.isMainThread else { return -1 }
     let window: NSWindow = appkitObject(handle)
-    guard let callback = window.delegate as? HostedWindowDelegate else { return -1 }
+    guard let callback = window.delegate as? HostedWindowDelegate, callback.acceptsCallbacks else { return -1 }
     return callback.windowShouldClose(window) ? 1 : 0
 }
 
@@ -378,24 +413,66 @@ public func appkit_host_window_verify_hidden_reshow(_ handle: UnsafeMutableRawPo
     guard Thread.isMainThread else { return false }
     let window: NSWindow = appkitObject(handle)
     guard !window.isVisible else { return false }
+    let application = NSApplication.shared
+    let wasActive = application.isActive
     let alpha = window.alphaValue
     let ignoresMouseEvents = window.ignoresMouseEvents
     window.alphaValue = 0
     window.ignoresMouseEvents = true
+    defer {
+        window.orderOut(nil)
+        window.alphaValue = alpha
+        window.ignoresMouseEvents = ignoresMouseEvents
+    }
     window.orderBack(nil)
     let shown = window.isVisible
     window.close()
-    let hidden = !window.isVisible
-    window.alphaValue = alpha
-    window.ignoresMouseEvents = ignoresMouseEvents
-    return shown && hidden
+    return shown && !window.isVisible && application.isActive == wasActive
+}
+
+@_cdecl("appkit_host_window_verify_hidden_reshow_with_veto")
+public func appkit_host_window_verify_hidden_reshow_with_veto(
+    _ handle: UnsafeMutableRawPointer,
+    _ path: Int32
+) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let window: NSWindow = appkitObject(handle)
+    guard !window.isVisible else { return false }
+    let application = NSApplication.shared
+    let wasActive = application.isActive
+    let alpha = window.alphaValue
+    let ignoresMouseEvents = window.ignoresMouseEvents
+    window.alphaValue = 0
+    window.ignoresMouseEvents = true
+    defer {
+        window.orderOut(nil)
+        window.alphaValue = alpha
+        window.ignoresMouseEvents = ignoresMouseEvents
+    }
+    switch path {
+    case 0:
+        window.orderFrontRegardless()
+    case 1:
+        let session = application.beginModalSession(for: window)
+        application.endModalSession(session)
+    default:
+        return false
+    }
+    let shownWithoutFocus = window.isVisible && !window.isKeyWindow && application.isActive == wasActive
+    window.performClose(nil)
+    let vetoed = window.isVisible
+    let callback = window.delegate as? HostedWindowDelegate
+    callback?.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+    let notified = callback?.acceptsCallbacks ?? false
+    window.performClose(nil)
+    return shownWithoutFocus && vetoed && notified && !window.isVisible && application.isActive == wasActive
 }
 
 @_cdecl("appkit_host_window_verify_event")
 public func appkit_host_window_verify_event(_ handle: UnsafeMutableRawPointer, _ kind: UInt32) -> Bool {
     guard Thread.isMainThread else { return false }
     let window: NSWindow = appkitObject(handle)
-    guard let callback = window.delegate as? HostedWindowDelegate else { return false }
+    guard let callback = window.delegate as? HostedWindowDelegate, callback.acceptsCallbacks else { return false }
     let notification = Notification(name: NSWindow.didMoveNotification, object: window)
     switch kind {
     case UInt32(APPKIT_HOST_WINDOW_EVENT_WILL_CLOSE):

@@ -123,6 +123,14 @@ pub enum HostedWindowEvent {
     ToggleTabBar = 21,
 }
 
+#[doc(hidden)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HiddenReshowPath {
+    OrderFrontRegardless = 0,
+    ModalSession = 1,
+}
+
 impl HostedWindowEvent {
     const fn from_raw(raw: u32) -> Option<Self> {
         match raw {
@@ -391,6 +399,17 @@ impl HostedWindow {
     #[must_use]
     pub fn verify_hidden_reshow(&self) -> bool {
         unsafe { ffi::appkit_host_window_verify_hidden_reshow(self.handle.as_ptr()) }
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn verify_hidden_reshow_with_veto(&self, path: HiddenReshowPath) -> bool {
+        unsafe {
+            ffi::appkit_host_window_verify_hidden_reshow_with_veto(
+                self.handle.as_ptr(),
+                path as i32,
+            )
+        }
     }
 
     #[doc(hidden)]
