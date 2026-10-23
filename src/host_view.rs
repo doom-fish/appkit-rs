@@ -418,8 +418,9 @@ impl HostedView {
         unsafe { ffi::appkit_host_view_set_tracking_options(self.as_ptr(), options.bits()) }
     }
 
-    pub fn set_owns_titlebar_drag(&self, owns: bool) {
-        unsafe { ffi::appkit_host_view_set_owns_titlebar_drag(self.as_ptr(), owns) };
+    #[must_use]
+    pub fn set_owns_titlebar_drag(&self, owns: bool) -> bool {
+        unsafe { ffi::appkit_host_view_set_owns_titlebar_drag(self.as_ptr(), owns) }
     }
 
     #[must_use]

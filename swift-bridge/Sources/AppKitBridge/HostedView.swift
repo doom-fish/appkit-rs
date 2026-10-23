@@ -95,10 +95,21 @@ final class HostViewWeakReference {
     }
 }
 
+final class OffscreenHostViewWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+}
+
 class HostedView: NSView, CALayerDelegate {
     private let hostedLayer: CAMetalLayer
     private var callbackOwner: HostViewCallbackOwner?
     fileprivate var ownsTitlebarDrag = false
+    fileprivate var titlebarDragQueryCount: UInt64 = 0
+    fileprivate var lastTitlebarDragRect: NSRect = .zero
     fileprivate var trackingOptions: NSTrackingArea.Options = []
     private var hostedTrackingArea: NSTrackingArea?
     var textInputOwner: AnyObject?
@@ -160,7 +171,10 @@ class HostedView: NSView, CALayerDelegate {
 
     @objc(_opaqueRectForWindowMoveWhenInTitlebar)
     func opaqueRectForWindowMoveWhenInTitlebar() -> NSRect {
-        ownsTitlebarDrag ? bounds : .zero
+        let rect = ownsTitlebarDrag ? bounds : .zero
+        titlebarDragQueryCount &+= 1
+        lastTitlebarDragRect = rect
+        return rect
     }
 
     override var acceptsFirstResponder: Bool {
@@ -340,11 +354,14 @@ public func appkit_host_view_new(
           let table,
           let borrowedLayer,
           let frame,
-          validHostViewRect(frame.pointee),
-          let owner = HostViewCallbackOwner(token: token, table: table.pointee) else {
+          validHostViewRect(frame.pointee) else {
         return nil
     }
     let layer: CAMetalLayer = appkitObject(borrowedLayer)
+    guard !(layer.delegate is HostedView),
+          let owner = HostViewCallbackOwner(token: token, table: table.pointee) else {
+        return nil
+    }
     var view: HostedView?
     guard appkit_try({
         view = HostedView(frame: frame.pointee, layer: layer, callbacks: owner)
@@ -398,10 +415,23 @@ public func appkit_host_view_tracking_options(_ handle: UnsafeMutableRawPointer)
 }
 
 @_cdecl("appkit_host_view_set_owns_titlebar_drag")
-public func appkit_host_view_set_owns_titlebar_drag(_ handle: UnsafeMutableRawPointer, _ owns: Bool) {
-    guard Thread.isMainThread else { return }
+public func appkit_host_view_set_owns_titlebar_drag(_ handle: UnsafeMutableRawPointer, _ owns: Bool) -> Bool {
+    guard Thread.isMainThread else { return false }
     let view: HostedView = appkitObject(handle)
+    guard view.ownsTitlebarDrag != owns else { return true }
+    let previous = view.ownsTitlebarDrag
     view.ownsTitlebarDrag = owns
+    guard view.window != nil, !view.isHidden else { return true }
+    guard appkit_try({
+        view.isHidden = true
+        view.isHidden = false
+        CATransaction.flush()
+    }) == nil else {
+        view.ownsTitlebarDrag = previous
+        _ = appkit_try { view.isHidden = false }
+        return false
+    }
+    return true
 }
 
 @_cdecl("appkit_host_view_invalidate_cursor_rects")
@@ -508,10 +538,7 @@ public func appkit_host_view_example_titlebar_drag_rect(
     _ out: UnsafeMutablePointer<CGRect>
 ) -> Bool {
     let view: HostedView = appkitObject(handle)
-    guard Thread.isMainThread,
-          view.responds(to: NSSelectorFromString("_opaqueRectForWindowMoveWhenInTitlebar")) else {
-        return false
-    }
+    guard Thread.isMainThread else { return false }
     out.pointee = view.opaqueRectForWindowMoveWhenInTitlebar()
     return true
 }
@@ -536,4 +563,80 @@ public func appkit_host_view_example_weak_reference(_ handle: UnsafeMutableRawPo
 public func appkit_host_view_example_weak_reference_is_alive(_ handle: UnsafeMutableRawPointer) -> Bool {
     let reference: HostViewWeakReference = appkitObject(handle)
     return reference.view != nil
+}
+
+@_cdecl("appkit_host_view_example_titlebar_query")
+public func appkit_host_view_example_titlebar_query(
+    _ handle: UnsafeMutableRawPointer,
+    _ out: UnsafeMutablePointer<CGRect>
+) -> UInt64 {
+    let view: HostedView = appkitObject(handle)
+    out.pointee = view.lastTitlebarDragRect
+    return view.titlebarDragQueryCount
+}
+
+@_cdecl("appkit_host_view_example_offscreen_titled_window_new")
+public func appkit_host_view_example_offscreen_titled_window_new(
+    _ x: Double,
+    _ y: Double,
+    _ width: Double,
+    _ height: Double
+) -> UnsafeMutableRawPointer? {
+    let frame = CGRect(x: x, y: y, width: width, height: height)
+    guard Thread.isMainThread, validHostViewRect(frame) else { return nil }
+    var window: OffscreenHostViewWindow?
+    guard appkit_try({
+        window = OffscreenHostViewWindow(
+            contentRect: frame,
+            styleMask: [.titled, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window?.isReleasedWhenClosed = false
+        window?.titlebarAppearsTransparent = true
+        window?.titleVisibility = .hidden
+        window?.alphaValue = 0.0
+    }) == nil else { return nil }
+    return appkitRetained(window)
+}
+
+@_cdecl("appkit_host_view_example_shown_offscreen")
+public func appkit_host_view_example_shown_offscreen(_ handle: UnsafeMutableRawPointer) -> Bool {
+    let view: HostedView = appkitObject(handle)
+    guard let window = view.window, window.isVisible, !NSScreen.screens.isEmpty else { return false }
+    return NSScreen.screens.allSatisfy { !window.frame.intersects($0.frame) }
+}
+
+@_cdecl("appkit_host_view_example_application_is_active")
+public func appkit_host_view_example_application_is_active() -> Bool {
+    NSApp?.isActive ?? false
+}
+
+@_cdecl("appkit_host_view_example_move_offscreen")
+public func appkit_host_view_example_move_offscreen(
+    _ handle: UnsafeMutableRawPointer,
+    _ x: Double,
+    _ y: Double
+) -> Bool {
+    let view: HostedView = appkitObject(handle)
+    guard Thread.isMainThread, x.isFinite, y.isFinite, let window = view.window else { return false }
+    guard appkit_try({ window.setFrameOrigin(NSPoint(x: x, y: y)) }) == nil else { return false }
+    return appkit_host_view_example_shown_offscreen(handle)
+}
+
+@_cdecl("appkit_host_view_example_redraw")
+public func appkit_host_view_example_redraw(_ handle: UnsafeMutableRawPointer, _ resize: Bool) -> Bool {
+    let view: HostedView = appkitObject(handle)
+    guard Thread.isMainThread, appkit_host_view_example_shown_offscreen(handle),
+          let window = view.window else { return false }
+    return appkit_try {
+        if resize {
+            let size = view.frame.size
+            view.setFrameSize(NSSize(width: size.width + 1, height: size.height + 1))
+        } else {
+            view.needsDisplay = true
+        }
+        window.displayIfNeeded()
+        CATransaction.flush()
+    } == nil
 }

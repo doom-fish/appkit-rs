@@ -7,7 +7,8 @@ use appkit::event::{EventType, ModifierFlags};
 use appkit::host_view::{
     HostViewEvent, HostViewNotification, HostViewQuery, HostedView, MetalLayer, TrackingAreaOptions,
 };
-use appkit::{CGPoint, CGRect, CGSize, Event, MainThreadMarker, Window};
+use appkit::host_window::{HostedWindow, HostedWindowConfiguration, WindowStyleMask};
+use appkit::{CGPoint, CGRect, CGSize, Event, MainThreadMarker, Screen, Window};
 
 extern "C" {
     fn appkit_retain(object: *mut c_void);
@@ -19,6 +20,17 @@ extern "C" {
     );
     fn appkit_host_view_example_weak_reference(view: *mut c_void) -> *mut c_void;
     fn appkit_host_view_example_weak_reference_is_alive(reference: *mut c_void) -> bool;
+    fn appkit_host_view_example_move_offscreen(view: *mut c_void, x: f64, y: f64) -> bool;
+    fn appkit_host_view_example_shown_offscreen(view: *mut c_void) -> bool;
+    fn appkit_host_view_example_application_is_active() -> bool;
+    fn appkit_host_view_example_redraw(view: *mut c_void, resize: bool) -> bool;
+    fn appkit_host_view_example_titlebar_query(view: *mut c_void, out: *mut CGRect) -> u64;
+    fn appkit_host_view_example_offscreen_titled_window_new(
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> *mut c_void;
     fn appkit_host_view_example_titlebar_drag_rect(view: *mut c_void, out: *mut CGRect) -> bool;
     fn appkit_host_view_send_event(view: *mut c_void, selector: u32, event: *mut c_void) -> bool;
     fn appkit_host_view_set_tracking_options(view: *mut c_void, options: u64) -> bool;
@@ -329,14 +341,14 @@ impl Fixture {
         });
         assert_eq!(rect, empty);
 
-        self.view.set_owns_titlebar_drag(true);
+        assert!(self.view.set_owns_titlebar_drag(true));
         assert!(unsafe {
             appkit_host_view_example_titlebar_drag_rect(self.view.as_ptr(), &raw mut rect)
         });
         assert_eq!(rect, self.view.as_view().bounds());
         assert_eq!(rect.size, CGSize::new(100.0, 70.0));
 
-        self.view.set_owns_titlebar_drag(false);
+        assert!(self.view.set_owns_titlebar_drag(false));
         assert!(unsafe {
             appkit_host_view_example_titlebar_drag_rect(self.view.as_ptr(), &raw mut rect)
         });
@@ -434,7 +446,7 @@ struct SharedLayerCase {
     main_thread: MainThreadMarker,
     layer: MetalLayer,
     first_window: Window,
-    second_window: Window,
+    second_window: HostedWindow,
     replacement: Option<HostedView>,
     weak_original: Option<NonNull<c_void>>,
     displays: Rc<Cell<usize>>,
@@ -453,10 +465,22 @@ fn build_shared_layer_case(case: &mut SharedLayerCase) -> Result<(), &'static st
     if !original.attach_to(&first_parent) {
         return Err("the original view did not attach");
     }
+    if unsafe { HostedView::new(case.main_thread, frame, case.layer.as_ptr()) }.is_some() {
+        return Err("the shared layer accepted a second live view");
+    }
+    let original_ptr = original.as_ptr();
+    let weak = NonNull::new(unsafe { appkit_host_view_example_weak_reference(original_ptr) })
+        .ok_or("the weak view reference is missing")?;
+    case.weak_original = Some(weak);
+    unsafe { appkit_retain(original_ptr) };
+    drop(original);
+    case.first_window.close();
+
     let replacement = unsafe { HostedView::new(case.main_thread, frame, case.layer.as_ptr()) }
         .ok_or("the replacement view is missing")?;
     let second_parent = case
         .second_window
+        .as_window()
         .content_view()
         .ok_or("the second content view is missing")?;
     if !replacement.attach_to(&second_parent)
@@ -464,10 +488,6 @@ fn build_shared_layer_case(case: &mut SharedLayerCase) -> Result<(), &'static st
     {
         return Err("the replacement view did not get the shared layer");
     }
-    let original_ptr = original.as_ptr();
-    let weak = NonNull::new(unsafe { appkit_host_view_example_weak_reference(original_ptr) })
-        .ok_or("the weak view reference is missing")?;
-    case.weak_original = Some(weak);
     replacement.set_notification_handler(Some(Box::new({
         let displays = case.displays.clone();
         move |notification| {
@@ -477,20 +497,15 @@ fn build_shared_layer_case(case: &mut SharedLayerCase) -> Result<(), &'static st
         }
     })));
 
-    let before_replacement = case.displays.get();
-    let initial_display = replacement.display_layer() && case.displays.get() > before_replacement;
-    unsafe { appkit_retain(original_ptr) };
     case.replacement = Some(replacement);
-    drop(original);
-    case.first_window.close();
-    let before_detach = case.displays.get();
-    let after_detach = case
+    let before_display = case.displays.get();
+    let replacement_displayed = case
         .replacement
         .as_ref()
         .is_some_and(HostedView::display_layer)
-        && case.displays.get() > before_detach;
+        && case.displays.get() > before_display;
     let original_alive = unsafe { appkit_host_view_example_weak_reference_is_alive(weak.as_ptr()) };
-    case.detached_display_delivered = initial_display && after_detach && original_alive;
+    case.detached_display_delivered = replacement_displayed && original_alive;
     unsafe { appkit_release(original_ptr) };
     Ok(())
 }
@@ -499,6 +514,59 @@ extern "C" fn build_shared_layer_case_in_pool(context: *mut c_void) {
     if let Some(case) = unsafe { context.cast::<SharedLayerCase>().as_mut() } {
         case.error = build_shared_layer_case(case).err();
     }
+}
+
+fn offscreen_rect(main_thread: MainThreadMarker) -> CGRect {
+    let screens = Screen::screens(main_thread);
+    let x = screens
+        .iter()
+        .map(|screen| {
+            let frame = screen.frame();
+            frame.origin.x + frame.size.width
+        })
+        .reduce(f64::max)
+        .expect("a connected screen")
+        + 128.0;
+    let y = screens
+        .iter()
+        .map(|screen| {
+            let frame = screen.frame();
+            frame.origin.y + frame.size.height
+        })
+        .reduce(f64::max)
+        .expect("a connected screen")
+        + 128.0;
+    CGRect::new(x, y, 180.0, 120.0)
+}
+
+fn offscreen_window(main_thread: MainThreadMarker, style: WindowStyleMask) -> HostedWindow {
+    let mut configuration = HostedWindowConfiguration::new(offscreen_rect(main_thread), style);
+    configuration.can_become_main = false;
+    configuration.can_become_key = false;
+    let window = HostedWindow::new(main_thread, configuration).expect("a hidden off-screen window");
+    assert!(!window.can_become_key());
+    assert!(!window.can_become_main());
+    window.as_window().set_alpha_value(0.0);
+    window
+}
+
+fn show_offscreen(view: &HostedView, window: &Window, main_thread: MainThreadMarker) {
+    assert!(!unsafe { appkit_host_view_example_application_is_active() });
+    window.order_front();
+    if !unsafe { appkit_host_view_example_shown_offscreen(view.as_ptr()) } {
+        let origin = offscreen_rect(main_thread).origin;
+        let moved =
+            unsafe { appkit_host_view_example_move_offscreen(view.as_ptr(), origin.x, origin.y) };
+        assert!(
+            moved,
+            "the window frame {:?} did not reach {origin:?}",
+            window.frame()
+        );
+    }
+    window.set_alpha_value(1.0);
+    assert_eq!(window.alpha_value(), 1.0);
+    assert!(unsafe { appkit_host_view_example_shown_offscreen(view.as_ptr()) });
+    assert!(!unsafe { appkit_host_view_example_application_is_active() });
 }
 
 fn verify_shared_layer_delegate() {
@@ -512,12 +580,7 @@ fn verify_shared_layer_delegate() {
             "Hidden original view",
         )
         .expect("a hidden window"),
-        second_window: Window::new(
-            main_thread,
-            CGRect::new(0.0, 0.0, 80.0, 60.0),
-            "Hidden replacement view",
-        )
-        .expect("a second hidden window"),
+        second_window: offscreen_window(main_thread, WindowStyleMask::BORDERLESS),
         replacement: None,
         weak_original: None,
         displays: Rc::new(Cell::new(0)),
@@ -540,9 +603,70 @@ fn verify_shared_layer_delegate() {
         .as_ref()
         .is_some_and(HostedView::display_layer));
     assert!(case.displays.get() > after_pool);
+    let replacement = case.replacement.as_ref().expect("a replacement view");
+    show_offscreen(replacement, &case.second_window.as_window(), main_thread);
+    assert!(unsafe {
+        HostedView::new(
+            main_thread,
+            replacement.as_view().bounds(),
+            case.layer.as_ptr(),
+        )
+    }
+    .is_none());
+    let before_needs_display = case.displays.get();
+    assert!(unsafe { appkit_host_view_example_redraw(replacement.as_ptr(), false) });
+    assert!(case.displays.get() > before_needs_display);
+    let before_resize = case.displays.get();
+    assert!(unsafe { appkit_host_view_example_redraw(replacement.as_ptr(), true) });
+    assert!(case.displays.get() > before_resize);
     drop(case.replacement.take());
-    case.second_window.close();
+    case.second_window.as_window().close();
     unsafe { appkit_release(weak_original.as_ptr()) };
+}
+
+fn verify_offscreen_titlebar_drag() {
+    let main_thread = MainThreadMarker::new().expect("the main thread");
+    let frame = offscreen_rect(main_thread);
+    let raw = NonNull::new(unsafe {
+        appkit_host_view_example_offscreen_titled_window_new(
+            frame.origin.x,
+            frame.origin.y,
+            frame.size.width,
+            frame.size.height,
+        )
+    })
+    .expect("a titled off-screen window");
+    let native = unsafe { Window::from_raw_borrowed(raw, main_thread) };
+    let parent = native.content_view().expect("a titlebar content view");
+    let layer = MetalLayer::new(main_thread).expect("a titlebar metal layer");
+    let view = unsafe { HostedView::new(main_thread, parent.bounds(), layer.as_ptr()) }
+        .expect("a titlebar view");
+    assert!(view.attach_to(&parent));
+    assert!(view.set_owns_titlebar_drag(true));
+    show_offscreen(&view, &native, main_thread);
+
+    let mut cached_rect = CGRect::new(-1.0, -1.0, -1.0, -1.0);
+    let before =
+        unsafe { appkit_host_view_example_titlebar_query(view.as_ptr(), &raw mut cached_rect) };
+    assert!(before > 0);
+    assert_eq!(cached_rect, view.as_view().bounds());
+
+    assert!(view.set_owns_titlebar_drag(false));
+    let after_releasing =
+        unsafe { appkit_host_view_example_titlebar_query(view.as_ptr(), &raw mut cached_rect) };
+    assert!(after_releasing > before);
+    assert_eq!(cached_rect, CGRect::new(0.0, 0.0, 0.0, 0.0));
+
+    assert!(view.set_owns_titlebar_drag(true));
+    let after_owning =
+        unsafe { appkit_host_view_example_titlebar_query(view.as_ptr(), &raw mut cached_rect) };
+    assert!(after_owning > after_releasing);
+    assert_eq!(cached_rect, view.as_view().bounds());
+
+    drop(view);
+    native.close();
+    drop(native);
+    unsafe { appkit_release(raw.as_ptr()) };
 }
 
 fn main() {
@@ -554,5 +678,6 @@ fn main() {
     fixture.verify_titlebar_drag();
     fixture.verify_reentrant_teardown(key, &mouse, cursor);
     verify_shared_layer_delegate();
-    println!("The hidden hosted view delivered every callback and closed safely.");
+    verify_offscreen_titlebar_drag();
+    println!("Hosted views delivered callbacks, updated titlebar regions, and closed safely.");
 }
