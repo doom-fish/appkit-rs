@@ -7,14 +7,7 @@ use appkit::window_ops::{
 };
 use appkit::{AppKitError, CGPoint, CGRect, CGSize, MainThreadMarker, Window};
 
-fn main() -> Result<(), AppKitError> {
-    let main_thread = MainThreadMarker::new().expect("the example starts on the main thread");
-    let window = Window::new(
-        main_thread,
-        CGRect::new(120.0, 180.0, 400.0, 280.0),
-        "Hidden window operations",
-    )?;
-
+fn check_window_properties(window: &Window) -> Result<(), AppKitError> {
     assert!(!window.is_visible());
     assert!(!window.is_key_window());
     assert!(!window.is_main_window());
@@ -26,40 +19,74 @@ fn main() -> Result<(), AppKitError> {
     assert!(window.style_mask().contains(WindowStyleMask::TITLED));
 
     let original_mask = window.style_mask();
-    window.set_style_mask(original_mask | WindowStyleMask::FULL_SIZE_CONTENT_VIEW);
+    window.set_style_mask(original_mask | WindowStyleMask::FULL_SIZE_CONTENT_VIEW)?;
     assert!(window
         .style_mask()
         .contains(WindowStyleMask::FULL_SIZE_CONTENT_VIEW));
-    window.set_style_mask(original_mask);
+    window.set_style_mask(original_mask)?;
+    assert!(window
+        .set_style_mask(original_mask | WindowStyleMask::FULL_SCREEN)
+        .is_err());
+    assert_eq!(window.style_mask(), original_mask);
 
     let original_level = window.level();
-    window.set_level(WindowLevel::Floating);
+    window.set_level(WindowLevel::Floating)?;
     assert_eq!(window.level(), WindowLevel::Floating);
-    window.set_level(original_level);
+    window.set_level(original_level)?;
 
     let original_behavior = window.collection_behavior();
-    window.set_collection_behavior(WindowCollectionBehavior::CAN_JOIN_ALL_SPACES);
+    window.set_collection_behavior(WindowCollectionBehavior::CAN_JOIN_ALL_SPACES)?;
     assert!(window
         .collection_behavior()
         .contains(WindowCollectionBehavior::CAN_JOIN_ALL_SPACES));
-    window.set_collection_behavior(original_behavior);
+    assert!(window
+        .set_collection_behavior(
+            WindowCollectionBehavior::CAN_JOIN_ALL_SPACES
+                | WindowCollectionBehavior::MOVE_TO_ACTIVE_SPACE
+        )
+        .is_err());
+    assert_eq!(
+        window.collection_behavior(),
+        WindowCollectionBehavior::CAN_JOIN_ALL_SPACES
+    );
+    window.set_collection_behavior(original_behavior)?;
 
+    let default_tabbing_identifier = window.tabbing_identifier();
+    assert!(default_tabbing_identifier
+        .as_ref()
+        .is_some_and(|identifier| !identifier.is_empty()));
     let original_mode = window.tabbing_mode();
-    window.set_tabbing_mode(WindowTabbingMode::Disallowed);
+    window.set_tabbing_mode(WindowTabbingMode::Disallowed)?;
     assert_eq!(window.tabbing_mode(), WindowTabbingMode::Disallowed);
-    window.set_tabbing_mode(original_mode);
+    window.set_tabbing_mode(original_mode)?;
     window.set_tabbing_identifier(Some("hidden-window-ops"))?;
     assert_eq!(
         window.tabbing_identifier().as_deref(),
         Some("hidden-window-ops")
     );
     window.set_tabbing_identifier(None)?;
-    assert!(window.tabbing_identifier().is_none());
+    assert_eq!(window.tabbing_identifier(), default_tabbing_identifier);
 
-    window.set_frame(CGRect::new(200.0, 220.0, 420.0, 300.0), false, false);
-    window.set_content_size(CGSize::new(380.0, 240.0));
+    window.set_frame(CGRect::new(200.0, 220.0, 420.0, 300.0), false, false)?;
+    let valid_frame = window.frame();
+    assert!(window
+        .set_frame(CGRect::new(f64::NAN, 220.0, 420.0, 300.0), false, false)
+        .is_err());
+    assert!(window
+        .set_frame(
+            CGRect::new(2_147_483_649.0, 220.0, 420.0, 300.0),
+            false,
+            false
+        )
+        .is_err());
+    assert_eq!(window.frame(), valid_frame);
+    window.set_content_size(CGSize::new(380.0, 240.0))?;
     assert_eq!(window.content_size(), CGSize::new(380.0, 240.0));
-    window.set_minimum_content_size(CGSize::new(200.0, 160.0));
+    assert!(window
+        .set_content_size(CGSize::new(f64::NAN, 240.0))
+        .is_err());
+    assert_eq!(window.content_size(), CGSize::new(380.0, 240.0));
+    window.set_minimum_content_size(CGSize::new(200.0, 160.0))?;
     assert_eq!(window.minimum_content_size(), CGSize::new(200.0, 160.0));
 
     let content_rect = CGRect::new(30.0, 40.0, 250.0, 180.0);
@@ -68,43 +95,46 @@ fn main() -> Result<(), AppKitError> {
     let _ = window.convert_point_to_screen(CGPoint::new(8.0, 12.0));
     let _ = window.convert_rect_to_screen(content_rect);
     let _ = window.mouse_location_outside_event_stream();
+    Ok(())
+}
 
-    window.set_background_color(RgbaColor::new(0.25, 0.5, 0.75, 1.0));
+fn check_window_chrome_and_document(window: &Window) -> Result<(), AppKitError> {
+    window.set_background_color(RgbaColor::new(0.25, 0.5, 0.75, 1.0))?;
     assert!(window.background_color().is_some());
+    assert!(window
+        .set_background_color(RgbaColor::new(f64::NAN, 0.5, 0.75, 1.0))
+        .is_err());
     window.set_document_edited(true);
     assert!(window.is_document_edited());
     window.set_document_edited(false);
 
     let filename = std::env::current_dir()
         .expect("the example has a worktree")
-        .join("Cargo.toml");
+        .join(OsStr::from_bytes(b"R\xc3\xa4kning.txt"));
     window.set_represented_filename(Some(&filename))?;
-    assert_eq!(
-        window.represented_filename().as_deref(),
-        Some(filename.as_path())
-    );
+    let represented = window
+        .represented_filename()
+        .expect("the window has a represented filename");
+    assert!(matches!(
+        represented.file_name(),
+        Some(name) if name == OsStr::new("Räkning.txt") || name == OsStr::new("Ra\u{308}kning.txt")
+    ));
     let bytes_filename = std::env::current_dir()
         .expect("the example has a worktree")
         .join(OsStr::from_bytes(b"hidden-window-\xff.txt"));
-    if window
+    assert!(window
         .set_represented_filename(Some(&bytes_filename))
-        .is_ok()
-    {
-        assert_eq!(
-            window.represented_filename().as_deref(),
-            Some(bytes_filename.as_path())
-        );
-    } else {
-        assert_eq!(
-            window.represented_filename().as_deref(),
-            Some(filename.as_path())
-        );
-    }
+        .is_err());
+    assert_eq!(window.represented_filename(), Some(represented));
     window.set_represented_filename(None)?;
     assert!(window.represented_filename().is_none());
 
     if let Some(close_button) = window.standard_window_button(WindowButton::Close) {
-        let _ = close_button.frame();
+        let frame = close_button.frame();
+        assert!(close_button
+            .set_frame(CGRect::new(f64::NAN, 0.0, 10.0, 10.0))
+            .is_err());
+        assert_eq!(close_button.frame(), frame);
         let _ = close_button.is_hidden();
         let _ = close_button.superview();
     }
@@ -114,6 +144,45 @@ fn main() -> Result<(), AppKitError> {
         .contains(appkit::window_ops::WindowOcclusionState::VISIBLE));
     assert!(!window.is_visible());
     assert!(!window.is_key_window());
+    Ok(())
+}
+
+fn check_simple_full_screen(main_thread: MainThreadMarker) -> Result<(), AppKitError> {
+    let simple_window = Window::new(
+        main_thread,
+        CGRect::new(200.0, 180.0, 360.0, 240.0),
+        "Hidden simple full screen",
+    )?;
+    let original_frame = simple_window.frame();
+    let original_style = simple_window.style_mask();
+    let view = simple_window
+        .content_view()
+        .expect("the window has a content view");
+    assert!(simple_window.toggle_simple_full_screen(&view));
+    assert!(simple_window.is_simple_full_screen());
+    assert!(!simple_window.is_visible());
+    assert!(!simple_window.is_key_window());
+    simple_window.close();
+    assert!(simple_window.is_simple_full_screen());
+    assert!(simple_window.toggle_simple_full_screen(&view));
+    assert!(!simple_window.is_simple_full_screen());
+    assert_eq!(simple_window.style_mask(), original_style);
+    assert_eq!(simple_window.frame(), original_frame);
+    assert!(!simple_window.is_visible());
+    assert!(!simple_window.is_key_window());
+    Ok(())
+}
+
+fn main() -> Result<(), AppKitError> {
+    let main_thread = MainThreadMarker::new().expect("the example starts on the main thread");
+    let window = Window::new(
+        main_thread,
+        CGRect::new(120.0, 180.0, 400.0, 280.0),
+        "Hidden window operations",
+    )?;
+    check_window_properties(&window)?;
+    check_window_chrome_and_document(&window)?;
+    check_simple_full_screen(main_thread)?;
     println!("Window {} stays hidden.", window.window_number());
     Ok(())
 }

@@ -1,6 +1,32 @@
 import AppKit
 import AppKitCallbackABI
+import AppKitExceptionShim
 import ObjectiveC
+
+private let windowCoordinateLimit = Double(Int32.max)
+
+private func windowOperationError(_ action: () -> Void) -> UnsafeMutablePointer<CChar>? {
+    guard let exception = appkit_try(action) else { return nil }
+    return strdup(exception as String)
+}
+
+private func validWindowSize(_ size: CGSize) -> Bool {
+    let dimensions = [Double(size.width), Double(size.height)]
+    return dimensions.allSatisfy { $0.isFinite && $0 >= 0 && $0 <= windowCoordinateLimit }
+}
+
+private func validWindowPoint(_ point: CGPoint) -> Bool {
+    [Double(point.x), Double(point.y)]
+        .allSatisfy { $0.isFinite && abs($0) <= windowCoordinateLimit }
+}
+
+private func validWindowFrame(_ frame: CGRect) -> Bool {
+    guard validWindowSize(frame.size), validWindowPoint(frame.origin) else { return false }
+    let x = Double(frame.origin.x) + Double(frame.size.width)
+    let y = Double(frame.origin.y) + Double(frame.size.height)
+    return [x, y]
+        .allSatisfy { $0.isFinite && abs($0) <= windowCoordinateLimit }
+}
 
 private var simpleFullScreenKey: UInt8 = 0
 private var simpleFullScreenCount = 0
@@ -32,7 +58,9 @@ private final class SimpleFullScreenState {
         active = false
         simpleFullScreenCount -= 1
         if simpleFullScreenCount == 0 {
-            NSApplication.shared.presentationOptions = savedPresentationOptions
+            _ = appkit_try {
+                NSApplication.shared.presentationOptions = savedPresentationOptions
+            }
         }
     }
 
@@ -92,9 +120,16 @@ public func appkit_window_ops_style_mask(_ handle: UnsafeMutableRawPointer) -> U
 }
 
 @_cdecl("appkit_window_ops_set_style_mask")
-public func appkit_window_ops_set_style_mask(_ handle: UnsafeMutableRawPointer, _ mask: UInt64) {
+public func appkit_window_ops_set_style_mask(
+    _ handle: UnsafeMutableRawPointer,
+    _ mask: UInt64
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    window.styleMask = NSWindow.StyleMask(rawValue: UInt(mask))
+    let styleMask = NSWindow.StyleMask(rawValue: UInt(mask))
+    guard styleMask.contains(.fullScreen) == window.styleMask.contains(.fullScreen) else {
+        return strdup("AppKit controls the full-screen style bit")
+    }
+    return windowOperationError { window.styleMask = styleMask }
 }
 
 @_cdecl("appkit_window_ops_level")
@@ -104,9 +139,12 @@ public func appkit_window_ops_level(_ handle: UnsafeMutableRawPointer) -> Int64 
 }
 
 @_cdecl("appkit_window_ops_set_level")
-public func appkit_window_ops_set_level(_ handle: UnsafeMutableRawPointer, _ level: Int64) {
+public func appkit_window_ops_set_level(
+    _ handle: UnsafeMutableRawPointer,
+    _ level: Int64
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    window.level = NSWindow.Level(rawValue: Int(level))
+    return windowOperationError { window.level = NSWindow.Level(rawValue: Int(level)) }
 }
 
 @_cdecl("appkit_window_ops_collection_behavior")
@@ -116,9 +154,16 @@ public func appkit_window_ops_collection_behavior(_ handle: UnsafeMutableRawPoin
 }
 
 @_cdecl("appkit_window_ops_set_collection_behavior")
-public func appkit_window_ops_set_collection_behavior(_ handle: UnsafeMutableRawPointer, _ behavior: UInt64) {
+public func appkit_window_ops_set_collection_behavior(
+    _ handle: UnsafeMutableRawPointer,
+    _ behavior: UInt64
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    window.collectionBehavior = NSWindow.CollectionBehavior(rawValue: UInt(behavior))
+    let collectionBehavior = NSWindow.CollectionBehavior(rawValue: UInt(behavior))
+    guard !collectionBehavior.contains([.canJoinAllSpaces, .moveToActiveSpace]) else {
+        return strdup("AppKit does not permit both space behaviors")
+    }
+    return windowOperationError { window.collectionBehavior = collectionBehavior }
 }
 
 @_cdecl("appkit_window_ops_make_first_responder")
@@ -135,9 +180,11 @@ public func appkit_window_ops_make_first_responder(
 public func appkit_window_ops_set_initial_first_responder(
     _ handle: UnsafeMutableRawPointer,
     _ viewHandle: UnsafeMutableRawPointer?
-) {
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    window.initialFirstResponder = viewHandle.map { appkitObject($0) as NSView }
+    return windowOperationError {
+        window.initialFirstResponder = viewHandle.map { appkitObject($0) as NSView }
+    }
 }
 
 @_cdecl("appkit_window_ops_set_frame")
@@ -146,18 +193,24 @@ public func appkit_window_ops_set_frame(
     _ frame: UnsafePointer<CGRect>,
     _ display: Bool,
     _ animate: Bool
-) {
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    window.setFrame(frame.pointee, display: display, animate: animate)
+    guard validWindowFrame(frame.pointee) else { return strdup("the window frame is invalid") }
+    return windowOperationError {
+        window.setFrame(frame.pointee, display: display, animate: animate)
+    }
 }
 
 @_cdecl("appkit_window_ops_set_frame_top_left_point")
 public func appkit_window_ops_set_frame_top_left_point(
     _ handle: UnsafeMutableRawPointer,
     _ point: UnsafePointer<CGPoint>
-) {
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    window.setFrameTopLeftPoint(point.pointee)
+    guard validWindowPoint(point.pointee) else {
+        return strdup("the window frame origin is invalid")
+    }
+    return windowOperationError { window.setFrameTopLeftPoint(point.pointee) }
 }
 
 @_cdecl("appkit_window_ops_content_size")
@@ -167,9 +220,13 @@ public func appkit_window_ops_content_size(_ handle: UnsafeMutableRawPointer, _ 
 }
 
 @_cdecl("appkit_window_ops_set_content_size")
-public func appkit_window_ops_set_content_size(_ handle: UnsafeMutableRawPointer, _ size: UnsafePointer<CGSize>) {
+public func appkit_window_ops_set_content_size(
+    _ handle: UnsafeMutableRawPointer,
+    _ size: UnsafePointer<CGSize>
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    window.setContentSize(size.pointee)
+    guard validWindowSize(size.pointee) else { return strdup("the window content size is invalid") }
+    return windowOperationError { window.setContentSize(size.pointee) }
 }
 
 @_cdecl("appkit_window_ops_frame_rect_for_content_rect")
@@ -219,9 +276,13 @@ public func appkit_window_ops_content_min_size(_ handle: UnsafeMutableRawPointer
 }
 
 @_cdecl("appkit_window_ops_set_content_min_size")
-public func appkit_window_ops_set_content_min_size(_ handle: UnsafeMutableRawPointer, _ size: UnsafePointer<CGSize>) {
+public func appkit_window_ops_set_content_min_size(
+    _ handle: UnsafeMutableRawPointer,
+    _ size: UnsafePointer<CGSize>
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    window.contentMinSize = size.pointee
+    guard validWindowSize(size.pointee) else { return strdup("the minimum content size is invalid") }
+    return windowOperationError { window.contentMinSize = size.pointee }
 }
 
 @_cdecl("appkit_window_ops_mouse_location_outside_event_stream")
@@ -296,7 +357,7 @@ public func appkit_window_ops_toggle_full_screen(_ handle: UnsafeMutableRawPoint
 @_cdecl("appkit_window_ops_is_simple_full_screen")
 public func appkit_window_ops_is_simple_full_screen(_ handle: UnsafeMutableRawPointer) -> Bool {
     let window: NSWindow = appkitObject(handle)
-    return simpleFullScreenState(for: window).map { !$0.closed } ?? false
+    return simpleFullScreenState(for: window) != nil
 }
 
 @_cdecl("appkit_window_ops_toggle_simple_full_screen")
@@ -306,28 +367,32 @@ public func appkit_window_ops_toggle_simple_full_screen(
 ) -> Bool {
     let window: NSWindow = appkitObject(handle)
     let view: NSView = appkitObject(viewHandle)
-    guard Thread.isMainThread, view.window === window else { return false }
+    guard Thread.isMainThread, !window.styleMask.contains(.fullScreen) else { return false }
+    let wasVisible = window.isVisible
 
     if let saved = simpleFullScreenState(for: window) {
-        guard !saved.transitioning else { return false }
+        guard !saved.transitioning, saved.closed || view.window === window else { return false }
         saved.transitioning = true
         saved.releasePresentation()
-        if !saved.closed {
+        let error = appkit_try {
             window.styleMask = saved.styleMask
-        }
-        if !saved.closed {
             window.setFrame(saved.frame, display: true)
         }
-        if !saved.closed {
-            window.makeKeyAndOrderFront(nil)
+        if error != nil {
+            saved.transitioning = false
+            return false
         }
-        if !saved.closed {
-            _ = window.makeFirstResponder(view)
+        if !saved.closed && wasVisible {
+            _ = appkit_try {
+                window.makeKeyAndOrderFront(nil)
+                _ = window.makeFirstResponder(view)
+            }
         }
         setSimpleFullScreenState(nil, for: window)
-        return !saved.closed
+        return true
     } else {
-        guard !window.styleMask.contains(.fullScreen), let screen = window.screen else {
+        guard view.window === window, let screen = window.screen,
+              validWindowFrame(screen.frame) else {
             return false
         }
         let state = SimpleFullScreenState(window: window)
@@ -337,25 +402,34 @@ public func appkit_window_ops_toggle_simple_full_screen(
         }
         simpleFullScreenCount += 1
         if simpleFullScreenCount == 1 {
-            NSApplication.shared.presentationOptions = [.autoHideDock, .autoHideMenuBar]
+            guard appkit_try({
+                NSApplication.shared.presentationOptions = [.autoHideDock, .autoHideMenuBar]
+            }) == nil else {
+                setSimpleFullScreenState(nil, for: window)
+                return false
+            }
         }
         if state.closed {
             setSimpleFullScreenState(nil, for: window)
             return false
         }
-        window.styleMask = .borderless
-        if !state.closed {
+        let error = appkit_try {
+            window.styleMask = .borderless
             window.setFrame(screen.frame, display: true)
         }
-        if !state.closed {
-            window.makeKeyAndOrderFront(nil)
-        }
-        if !state.closed {
-            _ = window.makeFirstResponder(view)
-        }
-        if state.closed {
+        if error != nil || state.closed {
+            _ = appkit_try {
+                window.styleMask = state.styleMask
+                window.setFrame(state.frame, display: true)
+            }
             setSimpleFullScreenState(nil, for: window)
             return false
+        }
+        if wasVisible {
+            _ = appkit_try {
+                window.makeKeyAndOrderFront(nil)
+                _ = window.makeFirstResponder(view)
+            }
         }
         state.transitioning = false
         return true
@@ -373,16 +447,16 @@ public func appkit_window_ops_begin_sheet(
     let sheet: NSWindow = appkitObject(sheetHandle)
     guard Thread.isMainThread, window !== sheet, sheet.sheetParent == nil else { return false }
     if token == 0 && table == nil {
-        window.beginSheet(sheet)
-        return true
+        return appkit_try { window.beginSheet(sheet) } == nil
     }
     guard let table, let owner = SheetCompletionOwner(token: token, table: table.pointee) else {
         return false
     }
-    window.beginSheet(sheet) { response in
-        owner.finish(response)
-    }
-    return true
+    return appkit_try {
+        window.beginSheet(sheet) { response in
+            owner.finish(response)
+        }
+    } == nil
 }
 
 @_cdecl("appkit_window_ops_end_sheet")
@@ -394,8 +468,9 @@ public func appkit_window_ops_end_sheet(
     let window: NSWindow = appkitObject(handle)
     let sheet: NSWindow = appkitObject(sheetHandle)
     guard sheet.sheetParent === window else { return false }
-    window.endSheet(sheet, returnCode: NSApplication.ModalResponse(rawValue: Int(response)))
-    return true
+    return appkit_try {
+        window.endSheet(sheet, returnCode: NSApplication.ModalResponse(rawValue: Int(response)))
+    } == nil
 }
 
 @_cdecl("appkit_window_ops_attached_sheet")
@@ -431,9 +506,16 @@ public func appkit_window_ops_tabbing_identifier(_ handle: UnsafeMutableRawPoint
 public func appkit_window_ops_set_tabbing_identifier(
     _ handle: UnsafeMutableRawPointer,
     _ identifier: UnsafePointer<CChar>?
-) {
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    window.tabbingIdentifier = identifier.map { String(cString: $0) } ?? ""
+    if let identifier {
+        return windowOperationError {
+            window.tabbingIdentifier = String(cString: identifier)
+        }
+    }
+    return windowOperationError {
+        _ = window.perform(Selector(("setTabbingIdentifier:")), with: nil)
+    }
 }
 
 @_cdecl("appkit_window_ops_tabbing_mode")
@@ -443,9 +525,14 @@ public func appkit_window_ops_tabbing_mode(_ handle: UnsafeMutableRawPointer) ->
 }
 
 @_cdecl("appkit_window_ops_set_tabbing_mode")
-public func appkit_window_ops_set_tabbing_mode(_ handle: UnsafeMutableRawPointer, _ mode: Int64) {
+public func appkit_window_ops_set_tabbing_mode(
+    _ handle: UnsafeMutableRawPointer,
+    _ mode: Int64
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    window.tabbingMode = NSWindow.TabbingMode(rawValue: Int(mode)) ?? .automatic
+    return windowOperationError {
+        window.tabbingMode = NSWindow.TabbingMode(rawValue: Int(mode)) ?? .automatic
+    }
 }
 
 @_cdecl("appkit_window_ops_add_tabbed_window")
@@ -461,8 +548,7 @@ public func appkit_window_ops_add_tabbed_window(
           let mode = NSWindow.OrderingMode(rawValue: Int(ordered)) else {
         return false
     }
-    window.addTabbedWindow(other, ordered: mode)
-    return true
+    return appkit_try { window.addTabbedWindow(other, ordered: mode) } == nil
 }
 
 @_cdecl("appkit_window_ops_tabbed_windows")
@@ -571,18 +657,23 @@ public func appkit_window_ops_chrome_frame(_ handle: UnsafeMutableRawPointer, _ 
 }
 
 @_cdecl("appkit_window_ops_chrome_set_frame")
-public func appkit_window_ops_chrome_set_frame(_ handle: UnsafeMutableRawPointer, _ frame: UnsafePointer<CGRect>) {
+public func appkit_window_ops_chrome_set_frame(
+    _ handle: UnsafeMutableRawPointer,
+    _ frame: UnsafePointer<CGRect>
+) -> UnsafeMutablePointer<CChar>? {
     let view: NSView = appkitObject(handle)
-    view.frame = frame.pointee
+    guard validWindowFrame(frame.pointee) else { return strdup("the chrome frame is invalid") }
+    return windowOperationError { view.frame = frame.pointee }
 }
 
 @_cdecl("appkit_window_ops_chrome_set_frame_origin")
 public func appkit_window_ops_chrome_set_frame_origin(
     _ handle: UnsafeMutableRawPointer,
     _ origin: UnsafePointer<CGPoint>
-) {
+) -> UnsafeMutablePointer<CChar>? {
     let view: NSView = appkitObject(handle)
-    view.setFrameOrigin(origin.pointee)
+    guard validWindowPoint(origin.pointee) else { return strdup("the chrome origin is invalid") }
+    return windowOperationError { view.setFrameOrigin(origin.pointee) }
 }
 
 @_cdecl("appkit_window_ops_chrome_is_hidden")
@@ -630,15 +721,21 @@ public func appkit_window_ops_background_color(
 public func appkit_window_ops_set_background_color(
     _ handle: UnsafeMutableRawPointer,
     _ color: UnsafePointer<AppKitRGBA>
-) {
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
     let color = color.pointee
-    window.backgroundColor = NSColor(
-        srgbRed: CGFloat(color.red),
-        green: CGFloat(color.green),
-        blue: CGFloat(color.blue),
-        alpha: CGFloat(color.alpha)
-    )
+    guard [color.red, color.green, color.blue, color.alpha]
+        .allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else {
+        return strdup("the background color is invalid")
+    }
+    return windowOperationError {
+        window.backgroundColor = NSColor(
+            srgbRed: CGFloat(color.red),
+            green: CGFloat(color.green),
+            blue: CGFloat(color.blue),
+            alpha: CGFloat(color.alpha)
+        )
+    }
 }
 
 @_cdecl("appkit_window_ops_is_opaque")
@@ -732,11 +829,11 @@ public func appkit_window_ops_set_accepts_mouse_moved_events(
 public func appkit_window_ops_perform_window_drag(
     _ handle: UnsafeMutableRawPointer,
     _ eventHandle: UnsafeMutableRawPointer
-) {
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
     let event: NSEvent = appkitObject(eventHandle)
-    guard event.window === window else { return }
-    window.performDrag(with: event)
+    guard event.window === window else { return strdup("the drag event has another window") }
+    return windowOperationError { window.performDrag(with: event) }
 }
 
 @_cdecl("appkit_window_ops_is_document_edited")
@@ -751,31 +848,11 @@ public func appkit_window_ops_set_document_edited(_ handle: UnsafeMutableRawPoin
     window.isDocumentEdited = edited
 }
 
-private func fileSystemBytes(_ path: String) -> [CChar]? {
-    let string = path as NSString
-    let maximum = string.maximumLengthOfBytes(using: String.Encoding.utf8.rawValue)
-    guard maximum < Int.max / 4 else { return nil }
-    var buffer = [CChar](repeating: 0, count: max(256, maximum * 4 + 1))
-    let converted = buffer.withUnsafeMutableBufferPointer {
-        string.getFileSystemRepresentation($0.baseAddress!, maxLength: $0.count)
-    }
-    return converted ? buffer : nil
-}
-
-private func hasFileSystemBytes(_ path: String, equalTo bytes: UnsafePointer<CChar>, length: Int) -> Bool {
-    guard let representation = fileSystemBytes(path) else { return false }
-    return representation.withUnsafeBufferPointer {
-        guard let start = $0.baseAddress else { return false }
-        return strlen(start) == length && memcmp(start, bytes, length) == 0
-    }
-}
-
 @_cdecl("appkit_window_ops_represented_filename")
 public func appkit_window_ops_represented_filename(_ handle: UnsafeMutableRawPointer) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
     guard !window.representedFilename.isEmpty else { return nil }
-    guard let bytes = fileSystemBytes(window.representedFilename) else { return nil }
-    return bytes.withUnsafeBufferPointer { strdup($0.baseAddress!) }
+    return strdup(window.representedFilename)
 }
 
 @_cdecl("appkit_window_ops_set_represented_filename")
@@ -783,29 +860,17 @@ public func appkit_window_ops_set_represented_filename(
     _ handle: UnsafeMutableRawPointer,
     _ bytes: UnsafePointer<CChar>?,
     _ length: Int
-) -> Bool {
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    guard length >= 0 else { return false }
+    guard length >= 0 else { return strdup("the represented filename length is invalid") }
     if let bytes {
-        guard String(validatingUTF8: bytes) != nil else { return false }
-        let filename = FileManager.default.string(
-            withFileSystemRepresentation: bytes,
-            length: length
-        )
-        guard hasFileSystemBytes(filename, equalTo: bytes, length: length) else {
-            return false
+        guard strlen(bytes) == length, let filename = String(validatingUTF8: bytes) else {
+            return strdup("the represented filename is not UTF-8")
         }
-        let previous = window.representedFilename
-        window.representedFilename = filename
-        guard hasFileSystemBytes(window.representedFilename, equalTo: bytes, length: length) else {
-            window.representedFilename = previous
-            return false
-        }
-    } else {
-        guard length == 0 else { return false }
-        window.representedFilename = ""
+        return windowOperationError { window.representedFilename = filename }
     }
-    return true
+    guard length == 0 else { return strdup("the represented filename is missing") }
+    return windowOperationError { window.representedFilename = "" }
 }
 
 @_cdecl("appkit_window_ops_order_out")
@@ -825,10 +890,14 @@ public func appkit_window_ops_order_window(
     _ handle: UnsafeMutableRawPointer,
     _ ordered: Int64,
     _ relativeTo: Int64
-) {
+) -> UnsafeMutablePointer<CChar>? {
     let window: NSWindow = appkitObject(handle)
-    guard let mode = NSWindow.OrderingMode(rawValue: Int(ordered)) else { return }
-    window.order(mode, relativeTo: Int(relativeTo))
+    guard let mode = NSWindow.OrderingMode(rawValue: Int(ordered)) else {
+        return strdup("the window order is invalid")
+    }
+    return windowOperationError {
+        window.order(mode, relativeTo: Int(relativeTo))
+    }
 }
 
 @_cdecl("appkit_window_ops_window_number")

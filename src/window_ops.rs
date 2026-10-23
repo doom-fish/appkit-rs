@@ -1,6 +1,8 @@
-use core::ffi::{c_void, CStr};
+use core::ffi::{c_char, c_void, CStr};
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::{CString, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -10,9 +12,7 @@ use apple_cf::cg::{CGPoint, CGRect, CGSize};
 use doom_fish_utils::panic_safe::catch_user_panic_result;
 
 use crate::appearance::AppearanceName;
-use crate::callbacks::{
-    CallbackRegistration, CallbackTableHeader, CallbackTableV1, HandlerSlot, RegistrationToken,
-};
+use crate::callbacks::{CallbackRegistration, CallbackTableHeader, HandlerSlot, RegistrationToken};
 use crate::error::AppKitError;
 use crate::event::EventRef;
 use crate::ffi::{self, window_ops as native};
@@ -243,6 +243,11 @@ impl RgbaColor {
     }
 }
 
+fn check_window_operation(error: *mut c_char) -> Result<(), AppKitError> {
+    unsafe { take_string(error) }
+        .map_or(Ok(()), |message| Err(AppKitError::InvalidArgument(message)))
+}
+
 #[derive(Debug, Clone)]
 pub struct WindowChromeView {
     handle: Handle,
@@ -270,14 +275,16 @@ impl WindowChromeView {
         read_rect(|out| unsafe { native::appkit_window_ops_chrome_frame(self.as_ptr(), out) })
     }
 
-    pub fn set_frame(&self, frame: CGRect) {
-        unsafe { native::appkit_window_ops_chrome_set_frame(self.as_ptr(), &raw const frame) };
+    pub fn set_frame(&self, frame: CGRect) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_chrome_set_frame(self.as_ptr(), &raw const frame)
+        })
     }
 
-    pub fn set_frame_origin(&self, origin: CGPoint) {
-        unsafe {
-            native::appkit_window_ops_chrome_set_frame_origin(self.as_ptr(), &raw const origin);
-        };
+    pub fn set_frame_origin(&self, origin: CGPoint) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_chrome_set_frame_origin(self.as_ptr(), &raw const origin)
+        })
     }
 
     #[must_use]
@@ -300,18 +307,87 @@ impl WindowChromeView {
 
 struct SheetCompletionState {
     handler: HandlerSlot<Box<dyn FnMut(SheetResponse)>>,
+    delivering: Cell<bool>,
+}
+
+thread_local! {
+    static SHEET_REGISTRATIONS: RefCell<HashMap<RegistrationToken, CallbackRegistration<SheetCompletionState>>> =
+        RefCell::new(HashMap::new());
 }
 
 #[must_use]
 pub struct SheetCompletion {
-    registration: CallbackRegistration<SheetCompletionState>,
+    token: RegistrationToken,
+    _main_thread: MainThreadMarker,
 }
 
 impl SheetCompletion {
     #[must_use]
     pub fn cancel(&self) -> bool {
-        self.registration.deactivate()
+        release_sheet_completion(self.token)
     }
+}
+
+fn register_sheet_completion(
+    main_thread: MainThreadMarker,
+    callback: Box<dyn FnOnce(SheetResponse)>,
+) -> SheetCompletion {
+    let mut callback = Some(callback);
+    let state = Rc::new(SheetCompletionState {
+        handler: HandlerSlot::new(),
+        delivering: Cell::new(false),
+    });
+    let _ = state.handler.replace(Some(Box::new(move |response| {
+        if let Some(callback) = callback.take() {
+            callback(response);
+        }
+    })));
+    let registration = CallbackRegistration::new(main_thread, state);
+    let token = registration.token();
+    SHEET_REGISTRATIONS.with(|registrations| {
+        let old = registrations.borrow_mut().insert(token, registration);
+        assert!(old.is_none(), "sheet tokens are unique");
+    });
+    SheetCompletion {
+        token,
+        _main_thread: main_thread,
+    }
+}
+
+fn release_sheet_completion(token: RegistrationToken) -> bool {
+    let registration = SHEET_REGISTRATIONS
+        .try_with(|registrations| {
+            registrations
+                .try_borrow_mut()
+                .ok()
+                .and_then(|mut registrations| registrations.remove(&token))
+        })
+        .ok()
+        .flatten();
+    let Some(registration) = registration else {
+        return false;
+    };
+    let _ = registration.deactivate();
+    drop(registration);
+    true
+}
+
+fn deliver_sheet_completion(
+    token: RegistrationToken,
+    response: SheetResponse,
+    main_thread: MainThreadMarker,
+) {
+    let Some(state) = CallbackRegistration::<SheetCompletionState>::snapshot(token, main_thread)
+    else {
+        return;
+    };
+    if state.delivering.replace(true) {
+        return;
+    }
+    let _ = state
+        .handler
+        .invoke("AppKit sheet handler", |handler| handler(response));
+    let _ = release_sheet_completion(token);
 }
 
 static SHEET_CALLBACKS: native::SheetCallbackTableV1 = native::SheetCallbackTableV1 {
@@ -319,7 +395,7 @@ static SHEET_CALLBACKS: native::SheetCallbackTableV1 = native::SheetCallbackTabl
         version: 1,
         size: size_of::<native::SheetCallbackTableV1>(),
     },
-    deactivate: CallbackTableV1::new(None, None).deactivate,
+    deactivate: sheet_deactivate_from_swift,
     complete: sheet_complete,
 };
 
@@ -331,14 +407,18 @@ extern "C" fn sheet_complete(raw_token: u64, raw_response: i64) {
         let Some(token) = RegistrationToken::from_raw(raw_token) else {
             return;
         };
-        let Some(state) =
-            CallbackRegistration::<SheetCompletionState>::snapshot(token, main_thread)
-        else {
+        deliver_sheet_completion(token, SheetResponse::from_raw(raw_response), main_thread);
+    });
+}
+
+extern "C" fn sheet_deactivate_from_swift(raw_token: u64) {
+    let _ = catch_user_panic_result("AppKit sheet deactivation", || {
+        if MainThreadMarker::new().is_none() {
             return;
-        };
-        let _ = state.handler.invoke("AppKit sheet handler", |handler| {
-            handler(SheetResponse::from_raw(raw_response));
-        });
+        }
+        if let Some(token) = RegistrationToken::from_raw(raw_token) {
+            let _ = release_sheet_completion(token);
+        }
     });
 }
 
@@ -350,8 +430,10 @@ impl Window {
         })
     }
 
-    pub fn set_style_mask(&self, mask: WindowStyleMask) {
-        unsafe { native::appkit_window_ops_set_style_mask(self.as_ptr(), mask.bits()) };
+    pub fn set_style_mask(&self, mask: WindowStyleMask) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_set_style_mask(self.as_ptr(), mask.bits())
+        })
     }
 
     #[must_use]
@@ -359,8 +441,10 @@ impl Window {
         WindowLevel::from_raw(unsafe { native::appkit_window_ops_level(self.as_ptr()) })
     }
 
-    pub fn set_level(&self, level: WindowLevel) {
-        unsafe { native::appkit_window_ops_set_level(self.as_ptr(), level.raw()) };
+    pub fn set_level(&self, level: WindowLevel) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_set_level(self.as_ptr(), level.raw())
+        })
     }
 
     #[must_use]
@@ -370,10 +454,13 @@ impl Window {
         })
     }
 
-    pub fn set_collection_behavior(&self, behavior: WindowCollectionBehavior) {
-        unsafe {
-            native::appkit_window_ops_set_collection_behavior(self.as_ptr(), behavior.bits());
-        };
+    pub fn set_collection_behavior(
+        &self,
+        behavior: WindowCollectionBehavior,
+    ) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_set_collection_behavior(self.as_ptr(), behavior.bits())
+        })
     }
 
     #[must_use]
@@ -381,25 +468,30 @@ impl Window {
         unsafe { native::appkit_window_ops_make_first_responder(self.as_ptr(), view.as_ptr()) }
     }
 
-    pub fn set_initial_first_responder(&self, view: Option<&View>) {
-        unsafe {
+    pub fn set_initial_first_responder(&self, view: Option<&View>) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
             native::appkit_window_ops_set_initial_first_responder(
                 self.as_ptr(),
                 view.map_or(ptr::null_mut(), View::as_ptr),
-            );
-        };
+            )
+        })
     }
 
-    pub fn set_frame(&self, frame: CGRect, display: bool, animate: bool) {
-        unsafe {
-            native::appkit_window_ops_set_frame(self.as_ptr(), &raw const frame, display, animate);
-        };
+    pub fn set_frame(
+        &self,
+        frame: CGRect,
+        display: bool,
+        animate: bool,
+    ) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_set_frame(self.as_ptr(), &raw const frame, display, animate)
+        })
     }
 
-    pub fn set_frame_top_left_point(&self, point: CGPoint) {
-        unsafe {
-            native::appkit_window_ops_set_frame_top_left_point(self.as_ptr(), &raw const point);
-        };
+    pub fn set_frame_top_left_point(&self, point: CGPoint) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_set_frame_top_left_point(self.as_ptr(), &raw const point)
+        })
     }
 
     #[must_use]
@@ -407,8 +499,10 @@ impl Window {
         read_size(|out| unsafe { native::appkit_window_ops_content_size(self.as_ptr(), out) })
     }
 
-    pub fn set_content_size(&self, size: CGSize) {
-        unsafe { native::appkit_window_ops_set_content_size(self.as_ptr(), &raw const size) };
+    pub fn set_content_size(&self, size: CGSize) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_set_content_size(self.as_ptr(), &raw const size)
+        })
     }
 
     #[must_use]
@@ -458,8 +552,10 @@ impl Window {
         read_size(|out| unsafe { native::appkit_window_ops_content_min_size(self.as_ptr(), out) })
     }
 
-    pub fn set_minimum_content_size(&self, size: CGSize) {
-        unsafe { native::appkit_window_ops_set_content_min_size(self.as_ptr(), &raw const size) };
+    pub fn set_minimum_content_size(&self, size: CGSize) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_set_content_min_size(self.as_ptr(), &raw const size)
+        })
     }
 
     #[must_use]
@@ -551,32 +647,24 @@ impl Window {
             ));
         }
 
-        let registration = completion.map(|callback| {
-            let mut callback = Some(callback);
-            let state = Rc::new(SheetCompletionState {
-                handler: HandlerSlot::new(),
-            });
-            let _ = state.handler.replace(Some(Box::new(move |response| {
-                if let Some(callback) = callback.take() {
-                    callback(response);
-                }
-            })));
-            CallbackRegistration::new(main_thread, state)
-        });
-        let token = registration
+        let completion =
+            completion.map(|callback| register_sheet_completion(main_thread, callback));
+        let token = completion
             .as_ref()
-            .map_or(0, |registration| registration.token().get());
+            .map_or(0, |completion| completion.token.get());
         let table = if token == 0 {
             ptr::null()
         } else {
             &raw const SHEET_CALLBACKS
         };
-
         if unsafe {
             native::appkit_window_ops_begin_sheet(self.as_ptr(), sheet.as_ptr(), token, table)
         } {
-            Ok(registration.map(|registration| SheetCompletion { registration }))
+            Ok(completion)
         } else {
+            if let Some(completion) = completion {
+                let _ = completion.cancel();
+            }
             Err(AppKitError::InvalidArgument(
                 "the window cannot begin this sheet".to_owned(),
             ))
@@ -620,15 +708,14 @@ impl Window {
 
     pub fn set_tabbing_identifier(&self, identifier: Option<&str>) -> Result<(), AppKitError> {
         let identifier = optional_c_string(identifier)?;
-        unsafe {
+        check_window_operation(unsafe {
             native::appkit_window_ops_set_tabbing_identifier(
                 self.as_ptr(),
                 identifier
                     .as_ref()
                     .map_or(ptr::null(), |value| value.as_ptr()),
-            );
-        };
-        Ok(())
+            )
+        })
     }
 
     #[must_use]
@@ -638,8 +725,10 @@ impl Window {
         })
     }
 
-    pub fn set_tabbing_mode(&self, mode: WindowTabbingMode) {
-        unsafe { native::appkit_window_ops_set_tabbing_mode(self.as_ptr(), mode.raw()) };
+    pub fn set_tabbing_mode(&self, mode: WindowTabbingMode) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_set_tabbing_mode(self.as_ptr(), mode.raw())
+        })
     }
 
     #[must_use]
@@ -728,8 +817,10 @@ impl Window {
             .then_some(color)
     }
 
-    pub fn set_background_color(&self, color: RgbaColor) {
-        unsafe { native::appkit_window_ops_set_background_color(self.as_ptr(), &raw const color) };
+    pub fn set_background_color(&self, color: RgbaColor) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_set_background_color(self.as_ptr(), &raw const color)
+        })
     }
 
     #[must_use]
@@ -794,8 +885,10 @@ impl Window {
         unsafe { native::appkit_window_ops_set_accepts_mouse_moved_events(self.as_ptr(), accepts) };
     }
 
-    pub fn perform_window_drag(&self, event: EventRef<'_>) {
-        unsafe { native::appkit_window_ops_perform_window_drag(self.as_ptr(), event.as_ptr()) };
+    pub fn perform_window_drag(&self, event: EventRef<'_>) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_perform_window_drag(self.as_ptr(), event.as_ptr())
+        })
     }
 
     #[must_use]
@@ -823,19 +916,13 @@ impl Window {
             .map(|path| CString::new(path.as_os_str().as_bytes()))
             .transpose()
             .map_err(|error| AppKitError::InvalidArgument(error.to_string()))?;
-        if unsafe {
+        check_window_operation(unsafe {
             native::appkit_window_ops_set_represented_filename(
                 self.as_ptr(),
                 bytes.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
                 bytes.as_ref().map_or(0, |value| value.as_bytes().len()),
             )
-        } {
-            Ok(())
-        } else {
-            Err(AppKitError::InvalidArgument(
-                "AppKit cannot use the represented filename".to_owned(),
-            ))
-        }
+        })
     }
 
     pub fn order_out(&self) {
@@ -846,8 +933,14 @@ impl Window {
         unsafe { native::appkit_window_ops_order_back(self.as_ptr()) };
     }
 
-    pub fn order_window(&self, mode: WindowOrderingMode, relative_to: i64) {
-        unsafe { native::appkit_window_ops_order_window(self.as_ptr(), mode.raw(), relative_to) };
+    pub fn order_window(
+        &self,
+        mode: WindowOrderingMode,
+        relative_to: i64,
+    ) -> Result<(), AppKitError> {
+        check_window_operation(unsafe {
+            native::appkit_window_ops_order_window(self.as_ptr(), mode.raw(), relative_to)
+        })
     }
 
     #[must_use]
@@ -891,5 +984,81 @@ impl Window {
 impl View {
     pub fn set_needs_display(&self, needs_display: bool) {
         unsafe { native::appkit_window_ops_view_set_needs_display(self.as_ptr(), needs_display) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::{
+        deliver_sheet_completion, register_sheet_completion, release_sheet_completion,
+        SheetCompletionState, SheetResponse,
+    };
+    use crate::callbacks::CallbackRegistration;
+    use crate::MainThreadMarker;
+
+    #[test]
+    fn sheet_completion_survives_the_returned_handle() {
+        let main_thread = unsafe { MainThreadMarker::new_unchecked() };
+        let received = Rc::new(Cell::new(None));
+        let result = Rc::clone(&received);
+        let completion = register_sheet_completion(
+            main_thread,
+            Box::new(move |response| result.set(Some(response))),
+        );
+        let token = completion.token;
+        drop(completion);
+
+        assert!(
+            CallbackRegistration::<SheetCompletionState>::snapshot(token, main_thread).is_some()
+        );
+        deliver_sheet_completion(token, SheetResponse::Ok, main_thread);
+        assert_eq!(received.get(), Some(SheetResponse::Ok));
+        assert!(
+            CallbackRegistration::<SheetCompletionState>::snapshot(token, main_thread).is_none()
+        );
+        deliver_sheet_completion(token, SheetResponse::Cancel, main_thread);
+        assert_eq!(received.get(), Some(SheetResponse::Ok));
+    }
+
+    #[test]
+    fn sheet_completion_handles_reentry_and_explicit_cancellation() {
+        let main_thread = unsafe { MainThreadMarker::new_unchecked() };
+        let token = Rc::new(Cell::new(None));
+        let nested_token = Rc::clone(&token);
+        let count = Rc::new(Cell::new(0));
+        let invoked = Rc::clone(&count);
+        let completion = register_sheet_completion(
+            main_thread,
+            Box::new(move |_| {
+                invoked.set(invoked.get() + 1);
+                deliver_sheet_completion(
+                    nested_token.get().expect("the callback has a token"),
+                    SheetResponse::Other(42),
+                    main_thread,
+                );
+            }),
+        );
+        token.set(Some(completion.token));
+        drop(completion);
+        deliver_sheet_completion(token.get().unwrap(), SheetResponse::Ok, main_thread);
+        assert_eq!(count.get(), 1);
+        assert!(!release_sheet_completion(token.get().unwrap()));
+
+        let cancelled = register_sheet_completion(
+            main_thread,
+            Box::new(move |_| panic!("a cancelled sheet delivered a callback")),
+        );
+        let cancelled_token = cancelled.token;
+        assert!(cancelled.cancel());
+        drop(cancelled);
+        deliver_sheet_completion(cancelled_token, SheetResponse::Ok, main_thread);
+        assert!(CallbackRegistration::<SheetCompletionState>::snapshot(
+            cancelled_token,
+            main_thread
+        )
+        .is_none());
     }
 }
