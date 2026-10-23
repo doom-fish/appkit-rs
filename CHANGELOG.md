@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ### Added
 
+- `OpenPanel` and `SavePanel` return owned file paths, and `Alert` sheets return a button index. A result arrives once, on the next main-queue turn, also when the caller drops the session. A parent window that closes aborts its sheet, and `cancel` closes the dialog.
+- `Cursor` gives the system cursors, image cursors and cursor visibility. Before macOS 15, the diagonal resize cursors are rotated copies of the public horizontal resize cursor.
 - `HostedWindow::deactivate_callbacks` and `HostedView::deactivate_callbacks` stop all callbacks to Rust without detaching or releasing the native object, so an owner can tear down in steps. A second call does nothing.
 - `HostedView` is an `NSView` that hosts a renderer's `CAMetalLayer`. It forwards key, mouse, scroll, pressure, magnify and swipe events, display, size, backing-property and appearance changes, cursor rectangles and mouse tracking through token callbacks, and it can own titlebar drags.
 - `Menu` and `MenuItem` build menus with responder actions, key equivalents, check states, submenus and application menu roles (main, Services, Windows and Help), and give a retained Dock menu to the application host. A submenu that would contain its own menu is refused.
