@@ -263,14 +263,15 @@ fn exercise_alternate_reshow(main_thread: MainThreadMarker, path: HiddenReshowPa
             )
         })
         .collect();
-    assert_eq!(
-        close_events,
-        [
-            HostedWindowEvent::Close,
-            HostedWindowEvent::WillClose,
-            HostedWindowEvent::Close,
-            HostedWindowEvent::WillClose
-        ]
-    );
+    let mut expected = vec![
+        HostedWindowEvent::Close,
+        HostedWindowEvent::WillClose,
+        HostedWindowEvent::Close,
+        HostedWindowEvent::WillClose,
+    ];
+    if path == HiddenReshowPath::ModalSession {
+        expected.extend([HostedWindowEvent::Close, HostedWindowEvent::WillClose]);
+    }
+    assert_eq!(close_events, expected);
     assert_eq!(host.verify_should_close(), None);
 }

@@ -164,6 +164,7 @@ extension HostedWindowOwner where Self: NSWindow {
 
     func hostedClose(_ close: () -> Bool) {
         guard !isClosing else { return }
+        callbackDelegate?.resumeIfShown()
         isClosing = true
         withExtendedLifetime(self) {
             defer { isClosing = false }
@@ -488,16 +489,20 @@ public func appkit_host_window_verify_hidden_reshow_with_veto(
     }) == nil else {
         return false
     }
-    switch path {
-    case 0:
-        guard appkit_try({ window.orderFrontRegardless() }) == nil else { return false }
-    case 1:
+    func beginAndEndModalSession() -> Bool {
         var session: NSApplication.ModalSession?
         guard appkit_try({ session = application.beginModalSession(for: window) }) == nil,
               let session,
               appkit_try({ application.endModalSession(session) }) == nil else {
             return false
         }
+        return true
+    }
+    switch path {
+    case 0:
+        guard appkit_try({ window.orderFrontRegardless() }) == nil else { return false }
+    case 1:
+        guard beginAndEndModalSession() else { return false }
     default:
         return false
     }
@@ -508,7 +513,15 @@ public func appkit_host_window_verify_hidden_reshow_with_veto(
     callback?.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
     let notified = callback?.acceptsCallbacks ?? false
     guard appkit_try({ window.performClose(nil) }) == nil else { return false }
-    return shownWithoutFocus && vetoed && notified && !window.isVisible && application.isActive == wasActive
+    let hiddenAfterClose = !window.isVisible
+    if path == 1 {
+        guard hiddenAfterClose, beginAndEndModalSession() else { return false }
+        let shownAgainWithoutFocus = window.isVisible && !window.isKeyWindow && application.isActive == wasActive
+        guard appkit_try({ window.close() }) == nil else { return false }
+        return shownWithoutFocus && vetoed && notified && shownAgainWithoutFocus
+            && !window.isVisible && application.isActive == wasActive
+    }
+    return shownWithoutFocus && vetoed && notified && hiddenAfterClose && application.isActive == wasActive
 }
 
 @_cdecl("appkit_host_window_verify_event")
