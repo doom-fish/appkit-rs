@@ -17,6 +17,7 @@ pub mod host_window;
 pub mod menu;
 pub mod panel;
 pub mod pasteboard;
+pub mod sound;
 pub mod text_input;
 pub mod window_ops;
 pub mod window_state;

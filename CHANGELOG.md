@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ### Added
 
+- `sound::beep` plays the system alert sound.
 - `TextInputClient` adds `NSTextInputClient` to `HostedView`: marked text, insertion with replacement ranges, UTF-16 ranges, rectangles and character indexes, and commands. `handle_event` tells callers whether the input context used the key or made a command that nothing handled.
 - `DocumentController::note_new_recent_document` adds a file to the recent documents. The path must be UTF-8 and not empty.
 - `OpenPanel` and `SavePanel` return owned file paths, and `Alert` sheets return a button index. A result arrives once, on the next main-queue turn, also when the caller drops the session. A parent window that closes aborts its sheet, and `cancel` closes the dialog.

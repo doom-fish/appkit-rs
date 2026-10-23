@@ -23,6 +23,7 @@ pub mod panel;
 pub mod pasteboard;
 pub mod screen;
 pub mod scroller;
+pub mod sound;
 pub mod text_input;
 mod util;
 pub mod view;
