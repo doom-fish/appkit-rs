@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-24
+
 ### Added
 
 - `DragRegistration` sends file drops on a hosted window to Rust through token callbacks, with positions, operations and the unchanged path bytes, and starts file and text drags from a hosted view.
