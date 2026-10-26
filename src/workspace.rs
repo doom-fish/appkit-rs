@@ -92,6 +92,20 @@ impl Drop for PowerObserver {
     }
 }
 
+type AccessibilityDisplayHandler = HandlerSlot<Box<dyn FnMut()>>;
+
+#[must_use = "the observer must remain alive to receive notifications"]
+pub struct AccessibilityDisplayObserver {
+    registration: CallbackRegistration<AccessibilityDisplayHandler>,
+    _handle: Handle,
+}
+
+impl Drop for AccessibilityDisplayObserver {
+    fn drop(&mut self) {
+        let _ = self.registration.deactivate();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemeRegistrationError {
     InvalidScheme,
@@ -177,6 +191,25 @@ extern "C" fn power_event(raw_token: u64, kind: i32) {
             _ => return,
         };
         state.notify(event);
+    });
+}
+
+extern "C" fn accessibility_display_changed(raw_token: u64) {
+    let _ = catch_user_panic_result("AppKit accessibility display callback", || {
+        let Some(main_thread) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(token) = RegistrationToken::from_raw(raw_token) else {
+            return;
+        };
+        let Some(handler) =
+            CallbackRegistration::<AccessibilityDisplayHandler>::snapshot(token, main_thread)
+        else {
+            return;
+        };
+        let _ = handler.invoke("AppKit accessibility display notification", |handler| {
+            handler();
+        });
     });
 }
 
@@ -325,6 +358,33 @@ impl Workspace {
         Some(PowerObserver {
             registration,
             handle,
+        })
+    }
+
+    #[must_use]
+    pub fn observe_accessibility_display(
+        main_thread: MainThreadMarker,
+        handler: impl FnMut() + 'static,
+    ) -> Option<AccessibilityDisplayObserver> {
+        let state = Rc::new(AccessibilityDisplayHandler::new());
+        state.replace(Some(Box::new(handler)));
+        let registration = CallbackRegistration::new(main_thread, state);
+        let table = native::AccessibilityDisplayTableV1 {
+            header: CallbackTableHeader {
+                version: 1,
+                size: size_of::<native::AccessibilityDisplayTableV1>(),
+            },
+            changed: Some(accessibility_display_changed),
+        };
+        let handle = unsafe {
+            Handle::from_retained(native::appkit_workspace_accessibility_display_observer_new(
+                registration.token().get(),
+                &raw const table,
+            ))
+        }?;
+        Some(AccessibilityDisplayObserver {
+            registration,
+            _handle: handle,
         })
     }
 

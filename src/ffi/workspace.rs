@@ -14,6 +14,19 @@ pub struct PowerTableV1 {
 }
 
 #[repr(C)]
+pub struct AccessibilityDisplayTableV1 {
+    pub header: CallbackTableHeader,
+    pub changed: Option<extern "C" fn(u64)>,
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<AccessibilityDisplayTableV1>() == 24);
+    assert!(core::mem::align_of::<AccessibilityDisplayTableV1>() == 8);
+    assert!(core::mem::offset_of!(AccessibilityDisplayTableV1, header) == 0);
+    assert!(core::mem::offset_of!(AccessibilityDisplayTableV1, changed) == 16);
+};
+
+#[repr(C)]
 pub struct SchemeTableV1 {
     pub header: CallbackTableHeader,
     pub complete: Option<extern "C" fn(u64, bool, *const u8, usize)>,
@@ -33,6 +46,10 @@ extern "C" {
     ) -> *mut c_void;
     pub fn appkit_workspace_power_observer_notify(observer: *mut c_void, kind: i32);
     pub fn appkit_workspace_power_observer_deliver(observer: *mut c_void, kind: i32);
+    pub fn appkit_workspace_accessibility_display_observer_new(
+        token: u64,
+        table: *const AccessibilityDisplayTableV1,
+    ) -> *mut c_void;
     pub fn appkit_workspace_register_url_scheme(
         scheme: *const c_char,
         token: u64,

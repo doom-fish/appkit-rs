@@ -7,6 +7,13 @@ It also forwards application and window callbacks and saves secure window state.
 
 The crate requires macOS 12.0 or later.
 
+## Accessibility display options
+
+Read the current options with the `Workspace::accessibility_display_should_*` methods.
+Keep a `workspace::AccessibilityDisplayObserver` from `Workspace::observe_accessibility_display` to receive changes on the main thread.
+Read the options again in the callback.
+Drop the observer to remove the registration and cancel queued Rust callbacks.
+
 ## Quick start
 
 ```rust,no_run

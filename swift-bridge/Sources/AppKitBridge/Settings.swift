@@ -1,4 +1,43 @@
 import AppKit
+import AppKitCallbackABI
+
+private final class AppKitAccessibilityDisplayObserver {
+    let center = NSWorkspace.shared.notificationCenter
+    var observer: NSObjectProtocol?
+
+    init?(token: UInt64, table: AppKitWorkspaceAccessibilityDisplayTableV1) {
+        guard Thread.isMainThread, token != 0, table.header.version == 1,
+              table.header.size >= MemoryLayout<AppKitWorkspaceAccessibilityDisplayTableV1>.size,
+              let changed = table.changed else {
+            return nil
+        }
+        observer = center.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil, queue: nil
+        ) { _ in
+            DispatchQueue.main.async {
+                changed(token)
+            }
+        }
+    }
+
+    deinit {
+        if let observer {
+            center.removeObserver(observer)
+        }
+    }
+}
+
+@_cdecl("appkit_workspace_accessibility_display_observer_new")
+public func appkit_workspace_accessibility_display_observer_new(
+    _ token: UInt64, _ table: UnsafePointer<AppKitWorkspaceAccessibilityDisplayTableV1>?
+) -> UnsafeMutableRawPointer? {
+    guard let table,
+          let observer = AppKitAccessibilityDisplayObserver(token: token, table: table.pointee) else {
+        return nil
+    }
+    return Unmanaged.passRetained(observer).toOpaque()
+}
 
 @_cdecl("appkit_scroller_preferred_scroller_style")
 public func appkit_scroller_preferred_scroller_style() -> Int64 {

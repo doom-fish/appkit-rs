@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-26
+
+### Added
+
+- `Workspace::observe_accessibility_display` reports changes to accessibility display options on the main thread.
+- `AccessibilityDisplayObserver` removes its notification registration when the caller drops it.
+
 ## [0.2.1] - 2026-10-26
 
 ### Fixed

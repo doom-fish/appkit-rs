@@ -14,6 +14,11 @@ typedef struct {
 
 typedef struct {
     AppKitCallbackHeader header;
+    void (*changed)(uint64_t token);
+} AppKitWorkspaceAccessibilityDisplayTableV1;
+
+typedef struct {
+    AppKitCallbackHeader header;
     void (*complete)(uint64_t token, bool success, const uint8_t *bytes, size_t length);
 } AppKitWorkspaceSchemeTableV1;
 

@@ -473,6 +473,7 @@
 | `-setDefaultApplicationAtURL:toOpenURLsWithScheme:completionHandler:` | ✅ | `Workspace::register_default_url_scheme`, `SchemeRegistration`, `SchemeRegistrationError` | Needs an installed application and bundle identifier. Drop does not cancel the completion. |
 | URL scheme completion cancellation | ✅ | `SchemeRegistration::cancel_completion` | Stops the callback, not the native registration request. |
 | `accessibilityDisplayShouldReduceMotion` | ✅ | `Workspace::accessibility_display_should_reduce_motion` |  |
+| `accessibilityDisplayOptionsDidChangeNotification` | ✅ | `Workspace::observe_accessibility_display`, `AccessibilityDisplayObserver` | Main-thread delivery. Drop removes the registration. |
 | `accessibilityDisplayShouldReduceTransparency` | ✅ | `Workspace::accessibility_display_should_reduce_transparency` |  |
 | `accessibilityDisplayShouldIncreaseContrast` | ✅ | `Workspace::accessibility_display_should_increase_contrast` |  |
 | `accessibilityDisplayShouldDifferentiateWithoutColor` | ✅ | `Workspace::accessibility_display_should_differentiate_without_color` |  |
