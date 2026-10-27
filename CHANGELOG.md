@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-27
+
+### Added
+
+- Native accessibility elements and hosted view callbacks through a versioned C table.
+- Per-host callback ownership, text ranges, attributed text, native notifications, and live announcements.
+
 ## [0.2.2] - 2026-10-26
 
 ### Added

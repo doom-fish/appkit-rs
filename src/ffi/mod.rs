@@ -2,6 +2,7 @@ use core::ffi::{c_char, c_void};
 
 use apple_cf::cg::{CGRect, CGSize};
 
+pub mod accessibility;
 pub mod alert;
 pub mod appearance;
 pub mod application;

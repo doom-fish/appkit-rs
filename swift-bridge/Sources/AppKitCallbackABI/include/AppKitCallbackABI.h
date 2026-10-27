@@ -22,6 +22,7 @@ typedef struct {
     size_t length;
 } AppKitUtf16Range;
 
+#include "AppKitAccessibilityABI.h"
 #include "AppKitAlertABI.h"
 #include "AppKitAppearanceABI.h"
 #include "AppKitApplicationABI.h"

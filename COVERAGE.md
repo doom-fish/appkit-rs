@@ -18,6 +18,22 @@
 | UTF-8 pointer and length | ✅ | `copy_utf8`, `dispatch_text` | Rust copies the bytes before it calls the handler. |
 | Main-thread callback dispatch | ✅ | `dispatch_event`, `dispatch_text` | Inactive tokens and calls from other threads get safe results. Rust contains handler panics. |
 
+## NSAccessibility
+
+| Contract | Status | Rust surface | Notes |
+| --- | --- | --- | --- |
+| Per-host callback table | Implemented | `accessibility::AccessibilityCallbacksV1` | Version 1, complete size, main thread, and all callbacks are required. |
+| Virtual native elements | Implemented | `ffi::accessibility::{appkit_a11y_node_new, appkit_a11y_retain, appkit_a11y_release}` | The consumer owns node identity and semantics. |
+| Hosted view children, focus and hit tests | Implemented | `appkit_a11y_view_ref_new`, `appkit_a11y_subclass_attach`, `appkit_a11y_subclass_detach` | Each attachment retains its own callback table and a weak view reference. |
+| Names, roles, values, states and bounds | Implemented | String, number, flag, value, list and rectangle callbacks | Native selectors use consumer results. |
+| Text ranges and attributed text | Implemented | `NodeRange`, `NodeTextRuns`, `TextRun` | Native ranges use UTF-16 offsets. |
+| Actions and text selection | Implemented | `NodeAction` | The consumer receives the action and payload. |
+| Native change notifications | Implemented | `appkit_a11y_post` | Focus, value, selected text, title, selected rows and destruction. |
+| Live announcements | Implemented | `appkit_a11y_announce` | Assertive uses high priority. Polite uses medium priority. |
+
+The bridge does not construct or compare semantic trees.
+Hidden-window provider checks do not establish screen-reader speech parity.
+
 ## NSView
 
 | Apple API | Status | Rust surface | Notes |

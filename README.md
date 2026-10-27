@@ -1,5 +1,25 @@
 # appkit-rs
 
+## Custom accessibility elements
+
+`accessibility::AccessibilityCallbacksV1` connects a custom renderer to native accessibility elements.
+Each host retains its own callback table.
+The table requires version 1 and its complete structure size.
+Create and release accessibility hosts and elements on the main thread.
+
+The bridge supports names, roles, values, states, children, focus, bounds, actions, text ranges, and attributed text.
+It posts native notifications and live announcements.
+The consumer owns its semantic tree and action handlers.
+The bridge does not depend on an external accessibility schema.
+
+Callbacks return borrowed UTF-8 bytes and borrowed arrays of native element pointers.
+The bridge copies each result before it calls another consumer callback.
+Keep each result valid until the next callback on the same thread.
+Keep native element references valid while the host can expose them.
+
+Detach the host before its callback state becomes invalid.
+Late element queries must return an unavailable result after the consumer releases its tree.
+
 Safe Rust bindings for Apple's [AppKit](https://developer.apple.com/documentation/appkit) framework on macOS.
 The crate creates and hosts windows and views, and it runs the event loop.
 It gives access to menus, dialogs, cursors, pasteboards, text input, drag operations, screens and workspace services.
