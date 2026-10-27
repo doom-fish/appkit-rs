@@ -274,6 +274,21 @@ impl Menu {
     }
 
     #[must_use]
+    pub fn application_dock_menu(main_thread: MainThreadMarker) -> Option<Self> {
+        let handle =
+            unsafe { Handle::from_retained(ffi::appkit_menu_application_dock_menu()) }?;
+        Some(Self {
+            handle,
+            main_thread,
+        })
+    }
+
+    #[must_use]
+    pub fn perform_action_at(&self, index: usize) -> bool {
+        unsafe { ffi::appkit_menu_perform_action_at(self.as_ptr(), index) }
+    }
+
+    #[must_use]
     pub fn set_application_menu(
         _main_thread: MainThreadMarker,
         role: ApplicationMenuRole,

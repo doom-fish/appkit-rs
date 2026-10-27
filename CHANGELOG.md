@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-27
+
+### Added
+
+- `Menu::application_dock_menu` asks the application delegate for its Dock menu without activation.
+- `Menu::perform_action_at` invokes an enabled menu item without a visible menu.
+
 ## [0.2.3] - 2026-10-27
 
 ### Added

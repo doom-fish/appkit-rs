@@ -18,6 +18,13 @@
 | UTF-8 pointer and length | ✅ | `copy_utf8`, `dispatch_text` | Rust copies the bytes before it calls the handler. |
 | Main-thread callback dispatch | ✅ | `dispatch_event`, `dispatch_text` | Inactive tokens and calls from other threads get safe results. Rust contains handler panics. |
 
+## Dock menu inspection
+
+| Apple API | Status | Rust surface | Notes |
+| --- | --- | --- | --- |
+| `NSApplicationDelegate.applicationDockMenu` | Implemented | `Menu::application_dock_menu` | The method retains the result without activation. |
+| `NSMenu.performActionForItem` | Implemented | `Menu::perform_action_at` | An invalid, disabled, separator, or actionless item returns `false`. |
+
 ## NSAccessibility
 
 | Contract | Status | Rust surface | Notes |

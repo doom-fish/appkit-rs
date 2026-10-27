@@ -2,6 +2,30 @@ import AppKit
 import AppKitCallbackABI
 import AppKitExceptionShim
 
+@_cdecl("appkit_menu_application_dock_menu")
+public func appkit_menu_application_dock_menu() -> UnsafeMutableRawPointer? {
+    guard Thread.isMainThread else { return nil }
+    let application = NSApplication.shared
+    var menu: NSMenu?
+    guard appkit_try({
+        menu = application.delegate?.applicationDockMenu?(application)
+    }) == nil else { return nil }
+    return appkitRetained(menu)
+}
+
+@_cdecl("appkit_menu_perform_action_at")
+public func appkit_menu_perform_action_at(
+    _ handle: UnsafeMutableRawPointer,
+    _ index: Int
+) -> Bool {
+    guard Thread.isMainThread else { return false }
+    let menu: NSMenu = appkitObject(handle)
+    guard index >= 0, index < menu.numberOfItems,
+          let item = menu.item(at: index), !item.isSeparatorItem,
+          item.isEnabled, item.action != nil else { return false }
+    return appkit_try({ menu.performActionForItem(at: index) }) == nil
+}
+
 private let appkitMenuSelectors: [String?] = [
     nil,
     "handleAppKitMenuItem:",

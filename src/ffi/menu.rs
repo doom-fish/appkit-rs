@@ -31,6 +31,8 @@ extern "C" {
     ) -> bool;
     pub(crate) fn appkit_menu_set_application_menu(role: i32, menu: *mut c_void) -> bool;
     pub(crate) fn appkit_menu_application_menu(role: i32) -> *mut c_void;
+    pub(crate) fn appkit_menu_application_dock_menu() -> *mut c_void;
+    pub(crate) fn appkit_menu_perform_action_at(menu: *mut c_void, index: usize) -> bool;
 
     pub(crate) fn appkit_menu_item_new(
         title: *const u8,

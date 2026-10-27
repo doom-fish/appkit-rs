@@ -135,6 +135,9 @@ Space restoration is not guaranteed without private restoration options. This cr
 
 `menu::Menu` and `menu::MenuItem` support responder actions, shortcuts, submenus and application menu roles.
 `Menu::retain_for_dock` gives `ApplicationHost` an owned Dock menu. A submenu cannot contain its own menu.
+`Menu::application_dock_menu` reads the current Dock menu from the application delegate without activation.
+`Menu::perform_action_at` invokes an enabled item without a visible menu.
+Both methods require the main thread.
 `ApplicationHost` forwards launch, reopen, quit, URL, screen and menu events to its handlers.
 `ApplicationHost::delegate_borrowed_ptr` stays valid while the host lives. Do not release this pointer.
 
