@@ -91,6 +91,7 @@ Hidden-window provider checks do not establish screen-reader speech parity.
 | `-scrollWheel:` | ✅ | `HostViewEvent::ScrollWheel` |  |
 | `-pressureChange:` | ✅ | `HostViewEvent::PressureChanged` |  |
 | `-magnify:`, `-swipe:` | ✅ | `HostViewEvent::{Magnified, Swiped}` |  |
+| `-smartMagnify:` | ✅ | `HostViewEvent::SmartMagnified` |  |
 | Other responder-chain events and commands | ⏭️ |  |  |
 
 ## NSTrackingArea

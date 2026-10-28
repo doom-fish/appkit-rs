@@ -23,7 +23,8 @@ typedef enum {
     AppKitHostViewScrollWheel = 17,
     AppKitHostViewPressureChanged = 18,
     AppKitHostViewMagnified = 19,
-    AppKitHostViewSwiped = 20
+    AppKitHostViewSwiped = 20,
+    AppKitHostViewSmartMagnified = 21
 } AppKitHostViewEventSelector;
 
 typedef enum {

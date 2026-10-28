@@ -32,6 +32,7 @@ private enum HostViewSelector: UInt32 {
     case pressureChanged = 18
     case magnified = 19
     case swiped = 20
+    case smartMagnified = 21
 }
 
 private enum HostViewNotification: UInt32 {
@@ -295,6 +296,10 @@ class HostedView: NSView, CALayerDelegate {
         _ = forward(.swiped, event)
     }
 
+    override func smartMagnify(with event: NSEvent) {
+        _ = forward(.smartMagnified, event)
+    }
+
     private func forward(_ selector: HostViewSelector, _ event: NSEvent) -> Bool {
         withExtendedLifetime(self) {
             callbackOwner?.event(selector, event) ?? false
@@ -505,6 +510,7 @@ public func appkit_host_view_send_event(
     case .pressureChanged: view.pressureChange(with: event)
     case .magnified: view.magnify(with: event)
     case .swiped: view.swipe(with: event)
+    case .smartMagnified: view.smartMagnify(with: event)
     }
     return true
 }

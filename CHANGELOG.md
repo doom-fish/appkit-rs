@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-28
+
+### Added
+
+- `HostViewEvent::SmartMagnified` forwards the two-finger double tap that AppKit sends to `-smartMagnifyWithEvent:`.
+
 ## [0.2.4] - 2026-10-27
 
 ### Added

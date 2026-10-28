@@ -252,6 +252,7 @@ impl Fixture {
             HostViewEvent::PressureChanged,
             HostViewEvent::Magnified,
             HostViewEvent::Swiped,
+            HostViewEvent::SmartMagnified,
         ] {
             self.view.send_event(selector, mouse.as_ref());
             assert_eq!(

@@ -41,6 +41,7 @@ pub enum HostViewEvent {
     PressureChanged = 18,
     Magnified = 19,
     Swiped = 20,
+    SmartMagnified = 21,
 }
 
 impl HostViewEvent {
@@ -66,6 +67,7 @@ impl HostViewEvent {
             18 => Some(Self::PressureChanged),
             19 => Some(Self::Magnified),
             20 => Some(Self::Swiped),
+            21 => Some(Self::SmartMagnified),
             _ => None,
         }
     }
