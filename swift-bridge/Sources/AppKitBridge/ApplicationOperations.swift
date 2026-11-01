@@ -1,6 +1,15 @@
 import AppKit
 import AppKitExceptionShim
 
+@_cdecl("appkit_application_reply_to_application_should_terminate")
+public func appkit_application_reply_to_application_should_terminate(
+    _ handle: UnsafeMutableRawPointer,
+    _ allowed: Bool
+) {
+    let application: NSApplication = appkitObject(handle)
+    application.reply(toApplicationShouldTerminate: allowed)
+}
+
 @_cdecl("appkit_application_key_window")
 public func appkit_application_key_window(_ handle: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? {
     let application: NSApplication = appkitObject(handle)

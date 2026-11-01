@@ -257,6 +257,7 @@ Hidden-window provider checks do not establish screen-reader speech parity.
 | `-activateIgnoringOtherApps:` | ✅ | `Application::activate_ignoring_other_apps` | Accepts a boolean argument. |
 | `-run` | ✅ | `Application::run` |  |
 | `-terminate:` | ✅ | `Application::terminate` |  |
+| `-replyToApplicationShouldTerminate:` | ✅ | `Application::reply_to_application_should_terminate` | Replies once after `TerminateReply::Later` on the main thread. |
 | `keyWindow`, `mainWindow` | ✅ | `Application::{key_window, main_window}` |  |
 | `orderedWindows` | ✅ | `Application::ordered_windows` | Returns retained `Window` values. |
 | `isActive`, `isHidden` | ✅ | `Application::{is_active, is_hidden}` |  |
@@ -278,7 +279,7 @@ Hidden-window provider checks do not establish screen-reader speech parity.
 | `-applicationWillFinishLaunching:` | ✅ | `ApplicationHostHandlers::will_finish_launching` |  |
 | `-applicationDidFinishLaunching:` | ✅ | `ApplicationHostHandlers::did_finish_launching` |  |
 | `-applicationShouldHandleReopen:hasVisibleWindows:` | ✅ | `ApplicationHostHandlers::should_handle_reopen` | Defaults to `true`. |
-| `-applicationShouldTerminate:` | ✅ | `ApplicationHostHandlers::should_terminate` | A request inside another callback gets an immediate answer. |
+| `-applicationShouldTerminate:`, `NSTerminateNow`, `NSTerminateCancel`, `NSTerminateLater` | ✅ | `ApplicationHostHandlers::{should_terminate, should_terminate_reply}`, `TerminateReply` | The reply handler takes priority. The boolean handler remains available. |
 | `-applicationWillTerminate:` | ✅ | `ApplicationHostHandlers::will_terminate` |  |
 | `-application:openURLs:` | ✅ | `ApplicationHostHandlers::open_urls` | Copies URL strings before the callback returns. |
 | `-applicationDockMenu:` | ✅ | `ApplicationHostHandlers::dock_menu_retained`, `Menu::retain_for_dock` | The callback returns a retained menu. |
@@ -368,9 +369,10 @@ Hidden-window provider checks do not establish screen-reader speech parity.
 | `-setData:forType:` | ✅ | `Pasteboard::set_data_for_type` |  |
 | `-setString:forType:` | ✅ | `Pasteboard::set_string_for_type` |  |
 | `-setPropertyList:forType:` with legacy file names | ✅ | `Pasteboard::set_filenames` | Each path must contain valid UTF-8 without a null byte. |
+| `-writeObjects:` with file URLs | ✅ | `Pasteboard::write_file_urls` | Preserves path bytes. Empty paths and NUL bytes are invalid. |
 | `changeCount` | ✅ | `Pasteboard::change_count` |  |
 | Common pasteboard type identifiers | ✅ | `pasteboard::TYPE_STRING`, `TYPE_PNG`, `TYPE_FILE_URL`, `TYPE_LEGACY_FILENAMES` | The module also defines image type identifiers. |
-| Other pasteboard items, promises and file URL writes | ⏭️ |  |  |
+| Other pasteboard items and promises | ⏭️ |  |  |
 
 ## NSDraggingDestination
 

@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use doom_fish_utils::panic_safe::catch_user_panic_result;
 
+use crate::application::TerminateReply as TerminationDecision;
 use crate::callbacks::{CallbackRegistration, CallbackTableHeader, HandlerSlot, RegistrationToken};
 use crate::ffi;
 use crate::main_thread::MainThreadMarker;
@@ -71,19 +72,13 @@ impl RetainedMenu {
     }
 }
 
-#[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TerminationDecision {
-    Cancel = 0,
-    Now = 1,
-}
-
 #[derive(Default)]
 pub struct ApplicationHostHandlers {
     pub will_finish_launching: HandlerSlot<Box<dyn FnMut()>>,
     pub did_finish_launching: HandlerSlot<Box<dyn FnMut()>>,
     pub should_handle_reopen: HandlerSlot<Box<dyn FnMut(bool) -> bool>>,
     pub should_terminate: HandlerSlot<Box<dyn FnMut() -> bool>>,
+    pub should_terminate_reply: HandlerSlot<Box<dyn FnMut() -> crate::application::TerminateReply>>,
     pub will_terminate: HandlerSlot<Box<dyn FnMut()>>,
     pub open_urls: HandlerSlot<Box<dyn FnMut(Vec<String>)>>,
     pub dock_menu_retained: HandlerSlot<Box<dyn FnMut() -> Option<RetainedMenu>>>,
@@ -178,19 +173,26 @@ impl ApplicationHostState {
         } else {
             self.enter()
         };
-        let allowed = self
+        let reply = self
             .handlers
-            .should_terminate
-            .invoke("AppKit should terminate handler", |handler| handler())
-            .unwrap_or(true);
+            .should_terminate_reply
+            .invoke("AppKit terminate reply handler", |handler| handler())
+            .unwrap_or_else(|| {
+                if self
+                    .handlers
+                    .should_terminate
+                    .invoke("AppKit should terminate handler", |handler| handler())
+                    .unwrap_or(true)
+                {
+                    TerminationDecision::Now
+                } else {
+                    TerminationDecision::Cancel
+                }
+            });
         if turn.is_some() {
             self.drain_pending();
         }
-        if allowed {
-            TerminationDecision::Now
-        } else {
-            TerminationDecision::Cancel
-        }
+        reply
     }
 
     fn drain_pending(&self) {

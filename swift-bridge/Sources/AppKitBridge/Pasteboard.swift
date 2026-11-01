@@ -241,6 +241,34 @@ public func appkit_pasteboard_set_filenames(
     }) == nil && saved
 }
 
+@_cdecl("appkit_pasteboard_write_file_urls")
+public func appkit_pasteboard_write_file_urls(
+    _ handle: UnsafeMutableRawPointer,
+    _ paths: UnsafePointer<AppKitPasteboardInput>,
+    _ count: Int
+) -> Bool {
+    let pasteboard: NSPasteboard = appkitObject(handle)
+    guard count >= 0 else { return false }
+    var representations: [[CChar]] = []
+    representations.reserveCapacity(count)
+    for index in 0..<count {
+        let path = paths[index]
+        guard path.length > 0, let bytes = path.bytes else { return false }
+        let buffer = UnsafeBufferPointer(start: bytes, count: path.length)
+        guard !buffer.contains(0) else { return false }
+        representations.append(buffer.map { CChar(bitPattern: $0) } + [0])
+    }
+    var saved = false
+    return appkit_try({
+        let urls = representations.map { representation in
+            representation.withUnsafeBufferPointer {
+                URL(fileURLWithFileSystemRepresentation: $0.baseAddress!, isDirectory: false, relativeTo: nil) as NSURL
+            }
+        }
+        saved = pasteboard.writeObjects(urls)
+    }) == nil && saved
+}
+
 @_cdecl("appkit_pasteboard_change_count")
 public func appkit_pasteboard_change_count(_ handle: UnsafeMutableRawPointer) -> Int64 {
     let pasteboard: NSPasteboard = appkitObject(handle)

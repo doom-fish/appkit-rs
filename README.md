@@ -141,6 +141,13 @@ Both methods require the main thread.
 `ApplicationHost` forwards launch, reopen, quit, URL, screen and menu events to its handlers.
 `ApplicationHost::delegate_borrowed_ptr` stays valid while the host lives. Do not release this pointer.
 
+`ApplicationHostHandlers::should_terminate_reply` returns `TerminateReply::Now`, `Cancel` or `Later`.
+This handler takes priority over the existing `should_terminate` boolean handler.
+If the reply handler supplies no result, the boolean handler applies. If neither handler supplies a result, the application can terminate.
+The boolean handler keeps its existing behavior.
+After `Later`, keep the host alive and call `Application::reply_to_application_should_terminate` once on the main thread.
+Pass `true` to allow termination or `false` to cancel it.
+
 `panel::OpenPanel` and `panel::SavePanel` give owned file paths. `alert::Alert` gives a button index from a sheet.
 Callbacks run once, even if you drop the session. Call `cancel` to close the dialog.
 If `Alert::begin_sheet` returns `AlertSheetStart::ParentMayBeShown`, show the parent window to present the sheet.
@@ -151,6 +158,9 @@ If you drop a `window_ops::SheetCompletion`, its sheet stays open. Its `cancel` 
 `Pasteboard::unique` gives a UUID name and releases the pasteboard globally on drop.
 Panel and file-URL drag paths keep their file-system bytes. Legacy pasteboard file names use UTF-8 bytes.
 `Pasteboard::set_filenames` and `DocumentController::note_new_recent_document` require UTF-8 paths.
+`Pasteboard::write_file_urls` writes native file URL objects and preserves file-system bytes, including non-UTF-8 path bytes.
+Empty paths and paths with a NUL byte return `AppKitError::InvalidArgument` before any pasteboard write.
+Call `clear_contents` first when the new files must replace the previous pasteboard contents.
 `Workspace` opens URLs and files, reads icons, observes power events and registers URL schemes.
 `appearance::Appearance` gives standard appearances and view overrides. High-contrast appearance names are for matches only.
 `blur::VisualEffectView` supplies standard and clear blur. `cursor::Cursor` supplies system and image cursors.
@@ -229,6 +239,24 @@ cargo run --example 17_drag
 ```
 
 `04_callbacks` checks callback ownership without a window. The other examples show each `AppKit` domain.
+
+### Owner-only examples
+
+Build these examples without a UI or pasteboard write:
+
+```bash
+cargo build --example terminate_later --example pasteboard_files
+```
+
+Only the owner runs these examples.
+
+- Run `cargo run --example terminate_later`.
+  Select Quit in the Dock menu, then select Cancel. The application stays open.
+  Select Quit again, then select Quit in the alert. The application terminates after its reply.
+- Run `cargo run --example pasteboard_files -- example-a.txt example-b.txt` with two existing files.
+  This example replaces the general pasteboard contents.
+  Paste into a Finder folder and verify that both files appear.
+  Remove only the pasted copies after the check.
 
 ## License
 

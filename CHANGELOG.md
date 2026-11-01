@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-01
+
+### Added
+
+- `Pasteboard::write_file_urls` writes native file URL objects and preserves file-system path bytes.
+- `TerminateReply` and `ApplicationHostHandlers::should_terminate_reply` add deferred termination without removal of the boolean handler.
+- `Application::reply_to_application_should_terminate` allows or cancels a deferred termination request.
+- The `terminate_later` and `pasteboard_files` examples provide owner-only manual checks.
+
 ## [0.2.5] - 2026-10-28
 
 ### Added

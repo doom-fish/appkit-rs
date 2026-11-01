@@ -68,6 +68,11 @@ extern "C" {
         paths: *const AppKitPasteboardInput,
         count: usize,
     ) -> bool;
+    pub(crate) fn appkit_pasteboard_write_file_urls(
+        pasteboard: *mut c_void,
+        paths: *const AppKitPasteboardInput,
+        count: usize,
+    ) -> bool;
     pub(crate) fn appkit_pasteboard_change_count(pasteboard: *mut c_void) -> i64;
     pub(crate) fn appkit_pasteboard_bytes_free(bytes: *mut u8);
     pub(crate) fn appkit_pasteboard_list_free(list: *mut AppKitPasteboardBytesList);

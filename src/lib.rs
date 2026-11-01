@@ -35,7 +35,7 @@ pub mod workspace;
 
 pub use appearance::AppearanceName;
 pub use apple_cf::cg::{CGPoint, CGRect, CGSize};
-pub use application::{AboutPanelOptions, ActivationPolicy, Application};
+pub use application::{AboutPanelOptions, ActivationPolicy, Application, TerminateReply};
 pub use callbacks::{
     CallbackRegistration, CallbackState, CallbackTableHeader, CallbackTableV1, HandlerSlot,
     NativeCallbackRegistration, RegistrationToken, Utf16Range,
@@ -52,7 +52,7 @@ pub use workspace::Workspace;
 
 pub mod prelude {
     pub use crate::appearance::AppearanceName;
-    pub use crate::application::{AboutPanelOptions, ActivationPolicy, Application};
+    pub use crate::application::{AboutPanelOptions, ActivationPolicy, Application, TerminateReply};
     pub use crate::callbacks::CallbackState;
     pub use crate::error::AppKitError;
     pub use crate::event::{Event, EventRef};

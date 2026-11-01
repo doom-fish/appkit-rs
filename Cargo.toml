@@ -1,6 +1,6 @@
 [package]
 name = "appkit-rs"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/doom-fish/appkit-rs"
@@ -23,6 +23,7 @@ include = [
     "LICENSE-*",
     "CHANGELOG.md",
     "COVERAGE.md",
+    "COVERAGE_AUDIT.md",
 ]
 
 [lints.rust]
@@ -62,6 +63,12 @@ name = "03_window"
 
 [[example]]
 name = "04_callbacks"
+
+[[example]]
+name = "terminate_later"
+
+[[example]]
+name = "pasteboard_files"
 
 [profile.release]
 debug = "full"

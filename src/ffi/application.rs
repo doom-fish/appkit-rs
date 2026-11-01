@@ -1,6 +1,10 @@
 use core::ffi::{c_char, c_void};
 
 extern "C" {
+    pub fn appkit_application_reply_to_application_should_terminate(
+        application: *mut c_void,
+        allowed: bool,
+    );
     pub fn appkit_application_key_window(application: *mut c_void) -> *mut c_void;
     pub fn appkit_application_main_window(application: *mut c_void) -> *mut c_void;
     pub fn appkit_application_ordered_windows(application: *mut c_void) -> *mut c_void;

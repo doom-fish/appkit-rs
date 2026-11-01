@@ -89,7 +89,11 @@ final class AppKitApplicationDelegate: NSResponder, NSApplicationDelegate, NSMen
         let reply = deliver(Int32(1)) {
             table.should_terminate?(token) ?? 1
         }
-        return reply == 0 ? .terminateCancel : .terminateNow
+        switch reply {
+        case 0: return .terminateCancel
+        case 2: return .terminateLater
+        default: return .terminateNow
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

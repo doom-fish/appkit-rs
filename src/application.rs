@@ -28,6 +28,14 @@ pub enum ActivationPolicy {
     Prohibited,
 }
 
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminateReply {
+    Now = 1,
+    Cancel = 0,
+    Later = 2,
+}
+
 impl ActivationPolicy {
     const fn raw(self) -> i64 {
         match self {
@@ -150,6 +158,12 @@ impl Application {
 
     pub fn terminate(&self) {
         unsafe { ffi::appkit_application_terminate(self.as_ptr()) };
+    }
+
+    pub fn reply_to_application_should_terminate(&self, allowed: bool) {
+        unsafe {
+            native::appkit_application_reply_to_application_should_terminate(self.as_ptr(), allowed);
+        }
     }
 
     pub fn set_application_icon_image(&self, image: Option<&Image>) {

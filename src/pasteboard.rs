@@ -203,29 +203,16 @@ impl Pasteboard {
     }
 
     pub fn set_filenames(&self, paths: &[PathBuf]) -> Result<bool, AppKitError> {
-        let inputs: Vec<_> = paths
-            .iter()
-            .map(|path| {
-                let bytes = path.as_os_str().as_bytes();
-                if bytes.is_empty() {
-                    return Err(AppKitError::InvalidArgument("a file path is empty".into()));
-                }
-                if bytes.contains(&0) {
-                    return Err(AppKitError::InvalidArgument(
-                        "a file path contains a null byte".into(),
-                    ));
-                }
-                std::str::from_utf8(bytes).map_err(|_| {
-                    AppKitError::InvalidArgument("a file path is not valid UTF-8".into())
-                })?;
-                Ok(ffi::AppKitPasteboardInput {
-                    bytes: bytes.as_ptr(),
-                    length: bytes.len(),
-                })
-            })
-            .collect::<Result<_, _>>()?;
+        let inputs = file_inputs(paths, true)?;
         Ok(unsafe {
             ffi::appkit_pasteboard_set_filenames(self.as_ptr(), inputs.as_ptr(), inputs.len())
+        })
+    }
+
+    pub fn write_file_urls(&self, paths: &[PathBuf]) -> Result<bool, AppKitError> {
+        let inputs = file_inputs(paths, false)?;
+        Ok(unsafe {
+            ffi::appkit_pasteboard_write_file_urls(self.as_ptr(), inputs.as_ptr(), inputs.len())
         })
     }
 
@@ -252,6 +239,35 @@ impl Drop for Pasteboard {
             unsafe { ffi::appkit_pasteboard_release_globally(self.as_ptr()) };
         }
     }
+}
+
+fn file_inputs(
+    paths: &[PathBuf],
+    require_utf8: bool,
+) -> Result<Vec<ffi::AppKitPasteboardInput>, AppKitError> {
+    paths
+        .iter()
+        .map(|path| {
+            let bytes = path.as_os_str().as_bytes();
+            if bytes.is_empty() {
+                return Err(AppKitError::InvalidArgument("a file path is empty".into()));
+            }
+            if bytes.contains(&0) {
+                return Err(AppKitError::InvalidArgument(
+                    "a file path contains a null byte".into(),
+                ));
+            }
+            if require_utf8 {
+                std::str::from_utf8(bytes).map_err(|_| {
+                    AppKitError::InvalidArgument("a file path is not valid UTF-8".into())
+                })?;
+            }
+            Ok(ffi::AppKitPasteboardInput {
+                bytes: bytes.as_ptr(),
+                length: bytes.len(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
