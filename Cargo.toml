@@ -1,6 +1,6 @@
 [package]
 name = "appkit-rs"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/doom-fish/appkit-rs"
@@ -41,8 +41,8 @@ name = "appkit"
 crate-type = ["lib"]
 
 [dependencies]
-apple-cf = { path = "../apple-cf-rs", version = ">=0.11, <0.12", default-features = false, features = ["cg"] }
-doom-fish-utils = { path = "../doom-fish-utils", version = ">=0.4.1, <0.5" }
+apple-cf = { version = ">=0.11, <0.12", default-features = false, features = ["cg"] }
+doom-fish-utils = ">=0.4.1, <0.5"
 
 [package.metadata.docs.rs]
 default-target = "aarch64-apple-darwin"

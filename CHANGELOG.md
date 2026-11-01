@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-11-01
+
+### Changed
+
+- `[dependencies]` gives only crates.io versions. A consumer that takes this crate from its Git repository does not need a patch for the sibling crates.
+- `.cargo/config.toml` replaces the sibling crates with the sibling checkouts for local and CI builds, as before.
+
 ## [0.2.7] - 2026-11-01
 
 ### Added
