@@ -166,6 +166,25 @@ Call `clear_contents` first when the new files must replace the previous pastebo
 `blur::VisualEffectView` supplies standard and clear blur. `cursor::Cursor` supplies system and image cursors.
 Use `sound::beep` for the system alert sound.
 
+## Dock tiles
+
+`Application::dock_tile` returns an owned handle to the application Dock tile.
+Use the handle on the main thread. Its clones refer to the same native tile.
+`DockTile::set_progress` accepts `None`, `DockProgress::Fraction(f64)` or `DockProgress::Busy`.
+A fraction must be finite and between zero and one, inclusive. Invalid values return `AppKitError::InvalidArgument` without a change.
+
+The Swift progress view draws the current application icon and a progress bar.
+`Busy` shows a static bar segment because the Dock does not provide continuous animation.
+`None` restores the content view that the progress view replaced.
+If other code replaces the content view, a clear leaves that view unchanged.
+Call `DockTile::display` after a progress change.
+The progress state remains until a caller clears it.
+
+`DockTile::set_badge_label` sets a label or clears it with `None`.
+`DockTile::badge_label` returns an owned label, or `None`.
+A label with a NUL byte returns `AppKitError::InvalidArgument`.
+Badge labels remain independent of progress.
+
 ## Events, text input and drag operations
 
 `EventRef<'_>` gives event details during a callback. Retain it as an `Event` if it must live after the callback.
@@ -245,11 +264,17 @@ cargo run --example 17_drag
 Build these examples without a UI or pasteboard write:
 
 ```bash
-cargo build --example terminate_later --example pasteboard_files
+cargo build --example dock_tile --example terminate_later --example pasteboard_files
 ```
 
 Only the owner runs these examples.
 
+- Run `cargo run --example dock_tile`.
+  Use the Dock menu to select `0%`, `50%`, `100%` and `Busy`.
+  Verify the bar values, the static busy segment and the unchanged application icon.
+  Select `Clear progress` and verify that the original icon returns without the bar.
+  The optional `Badge label` and `Clear badge` items show and clear `1`.
+  Select Quit in the Dock menu.
 - Run `cargo run --example terminate_later`.
   Select Quit in the Dock menu, then select Cancel. The application stays open.
   Select Quit again, then select Quit in the alert. The application terminates after its reply.

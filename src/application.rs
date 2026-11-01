@@ -4,6 +4,7 @@ use core::ptr::NonNull;
 use std::ffi::CString;
 
 use crate::appearance::AppearanceName;
+use crate::dock_tile::DockTile;
 use crate::error::AppKitError;
 use crate::event::Event;
 use crate::ffi;
@@ -169,6 +170,16 @@ impl Application {
     pub fn set_application_icon_image(&self, image: Option<&Image>) {
         let image = image.map_or(core::ptr::null_mut(), Image::as_ptr);
         unsafe { ffi::appkit_application_set_application_icon_image(self.as_ptr(), image) };
+    }
+
+    #[must_use]
+    pub fn dock_tile(&self) -> DockTile {
+        DockTile {
+            handle: unsafe {
+                Handle::from_retained(native::appkit_application_dock_tile(self.as_ptr()))
+            }
+            .expect("the application has a Dock tile"),
+        }
     }
 
     #[must_use]

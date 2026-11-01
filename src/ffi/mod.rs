@@ -11,6 +11,7 @@ pub mod blur;
 pub mod callbacks;
 pub mod cursor;
 pub mod document_controller;
+pub mod dock_tile;
 pub mod drag;
 pub mod event;
 pub mod host_view;

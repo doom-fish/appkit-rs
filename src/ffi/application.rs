@@ -1,6 +1,7 @@
 use core::ffi::{c_char, c_void};
 
 extern "C" {
+    pub fn appkit_application_dock_tile(application: *mut c_void) -> *mut c_void;
     pub fn appkit_application_reply_to_application_should_terminate(
         application: *mut c_void,
         allowed: bool,

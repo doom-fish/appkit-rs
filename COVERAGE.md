@@ -2,7 +2,7 @@
 
 - Framework: `AppKit.framework`
 - Scope: The crate covers windows, views, delegates, events, text input, drag operations, pasteboards, menus, panels, cursors and workspace services.
-- Scope: It also covers appearance, alerts, screens, secure window state and main-thread callback tokens.
+- Scope: It also covers appearance, alerts, screens, Dock tiles, secure window state and main-thread callback tokens.
 - Limits: The crate does not call private selectors. Space restoration is not guaranteed without private restoration options.
 - Legend: `✅` implemented, `⏭️` not implemented
 
@@ -251,6 +251,7 @@ Hidden-window provider checks do not establish screen-reader speech parity.
 | --- | --- | --- | --- |
 | `+sharedApplication` | ✅ | `Application::shared` |  |
 | `applicationIconImage` | ✅ | `Application::set_application_icon_image` |  |
+| `dockTile` | ✅ | `Application::dock_tile` | Returns a retained `DockTile`. |
 | `-orderFrontStandardAboutPanelWithOptions:` | ✅ | `Application::order_front_standard_about_panel` | The application name, the application version and the version. |
 | `-setActivationPolicy:` | ✅ | `Application::set_activation_policy` |  |
 | `-activate`, `-activateIgnoringOtherApps:` | ✅ | `Application::activate` | `-activate` on macOS 14 and later. |
@@ -269,7 +270,17 @@ Hidden-window provider checks do not establish screen-reader speech parity.
 | `-orderFrontCharacterPalette:` | ✅ | `Application::order_front_character_palette` |  |
 | `-changeWindowsItem:title:filename:` | ✅ | `Application::change_windows_item` | Sets the menu title without a filename flag. |
 | `currentEvent` | ✅ | `Application::current_event`, `Event::current` | Returns a retained event. |
-| `-stop:`, dock tile customization | ⏭️ |  | Menus have a separate Rust surface. |
+| `-stop:` | ⏭️ |  | Menus have a separate Rust surface. |
+
+## NSDockTile
+
+| Apple API | Status | Rust surface | Notes |
+| --- | --- | --- | --- |
+| `contentView` | ✅ | `DockTile::set_progress`, `DockProgress::{Fraction, Busy}` | A Swift view draws the icon and bar. Clear restores the previous view. |
+| `size` | ✅ | Internal progress view layout | No public size getter. |
+| `-display` | ✅ | `DockTile::display` | Call after a progress change. |
+| `badgeLabel` | ✅ | `DockTile::{set_badge_label, badge_label}` | `None` clears the label. Independent of progress. |
+| `showsApplicationBadge`, `owner` | ⏭️ |  | No arbitrary content view or owner wrapper. |
 
 ## NSApplicationDelegate
 

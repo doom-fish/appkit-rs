@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-11-01
+
+### Added
+
+- `Application::dock_tile` returns an owned `DockTile` handle.
+- `DockTile::set_progress` draws the application icon with a fractional bar or a static busy segment.
+- A cleared progress state restores the previous content view. `DockTile::display` updates the Dock tile.
+- `DockTile::set_badge_label` and `DockTile::badge_label` set, clear and read the native badge label.
+- The `dock_tile` example provides owner-only manual checks for progress and badge labels.
+
 ## [0.2.6] - 2026-11-01
 
 ### Added

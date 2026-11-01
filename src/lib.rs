@@ -10,6 +10,7 @@ pub mod blur;
 pub mod callbacks;
 pub mod cursor;
 pub mod document_controller;
+pub mod dock_tile;
 pub mod drag;
 pub mod error;
 pub mod event;
@@ -40,6 +41,7 @@ pub use callbacks::{
     CallbackRegistration, CallbackState, CallbackTableHeader, CallbackTableV1, HandlerSlot,
     NativeCallbackRegistration, RegistrationToken, Utf16Range,
 };
+pub use dock_tile::{DockProgress, DockTile};
 pub use error::AppKitError;
 pub use event::{Event, EventRef};
 pub use image::Image;
@@ -54,6 +56,7 @@ pub mod prelude {
     pub use crate::appearance::AppearanceName;
     pub use crate::application::{AboutPanelOptions, ActivationPolicy, Application, TerminateReply};
     pub use crate::callbacks::CallbackState;
+    pub use crate::dock_tile::{DockProgress, DockTile};
     pub use crate::error::AppKitError;
     pub use crate::event::{Event, EventRef};
     pub use crate::image::Image;
